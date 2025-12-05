@@ -4,7 +4,6 @@ const { StreamingTranscriptionService } = require('./streaming/service');
 class TranscriptionService extends EventEmitter {
     constructor(config) {
         super();
-        this.enabled = Boolean(config?.enabled);
         this.streamingService = new StreamingTranscriptionService(config);
     }
 
@@ -37,30 +36,18 @@ class TranscriptionService extends EventEmitter {
     }
 
     startSession(metadata) {
-        if (!this.enabled) {
-            throw new Error('Transcription service is disabled.');
-        }
         return this.streamingService.startSession(metadata);
     }
 
     pushChunk(sessionId, chunk) {
-        if (!this.enabled) {
-            return false;
-        }
         return this.streamingService.pushChunk(sessionId, chunk);
     }
 
     async stopSession(sessionId) {
-        if (!this.enabled) {
-            return;
-        }
         await this.streamingService.stopSession(sessionId);
     }
 
     async stopAllSessions() {
-        if (!this.enabled) {
-            return;
-        }
         await this.streamingService.stopAllSessions();
     }
 }

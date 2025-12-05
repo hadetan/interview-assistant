@@ -23,9 +23,7 @@ const normalizeChunkPayload = (data) => {
 contextBridge.exposeInMainWorld('electronAPI', {
     getDesktopSources: (options) => ipcRenderer.invoke('desktop-capture:get-sources', options),
     getPlatform: () => process.platform,
-    // Return the configured chunk timeslice in milliseconds
     getChunkTimesliceMs: () => {
-        // Mirror server-side config name: TRANSCRIPTION_CHUNK_TIMESLICE_MS
         const raw = process.env.TRANSCRIPTION_CHUNK_TIMESLICE_MS || process.env.CHUNK_TIMESLICE_MS || '';
         const parsed = parseInt(String(raw || ''), 10);
         // Use the current app default of 120ms if parsing fails or value is out of bounds

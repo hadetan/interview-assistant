@@ -394,17 +394,9 @@ class StreamingTranscriptionService extends EventEmitter {
     }
 
     async init() {
-        if (!this.config.enabled) {
-            log('info', 'Streaming transcription disabled via configuration.');
-            this.ready = false;
-            return;
-        }
-
         const apiKey = this.config.providerConfig?.gemini?.apiKey;
-        const mockEnabled = Boolean(this.config.streaming?.mock);
-
-        if (!apiKey && !mockEnabled) {
-            throw new Error('GEMINI_API_KEY must be configured unless TRANSCRIPTION_MOCK=1.');
+        if (!apiKey) {
+            throw new Error('GEMINI_API_KEY must be configured.');
         }
 
         this.ready = true;

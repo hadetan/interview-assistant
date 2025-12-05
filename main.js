@@ -42,9 +42,7 @@ app.whenReady().then(() => {
         }
     });
 
-    transcriptionConfig = loadTranscriptionConfig({
-        defaultOutputDir: path.join(app.getPath('videos'), 'ScreenAudioCapture', 'transcripts')
-    });
+    transcriptionConfig = loadTranscriptionConfig();
 
     transcriptionInitPromise = createTranscriptionService(transcriptionConfig)
         .then((service) => {
