@@ -34,7 +34,7 @@ module.exports = function loadTranscriptionConfig() {
         streaming: {
             chunkTimesliceMs: toInteger(TRANSCRIPTION_CHUNK_TIMESLICE_MS, 200),
             maxChunkBytes: toInteger(TRANSCRIPTION_MAX_CHUNK_BYTES, 128 * 1024),
-            prompt: TRANSCRIPTION_PROMPT || 'Transcribe the audio into standard English. The speaker is speaking English. Do not transcribe into any other language. Output only English text.',
+            prompt: TRANSCRIPTION_PROMPT || 'Transcribe the incoming system audio. Respond with lower-case plain text, no timestamps, no speaker labels.',
             silenceFillMs: toInteger(TRANSCRIPTION_SILENCE_FILL_MS, 200),
             silenceFrameMs: toInteger(TRANSCRIPTION_SILENCE_FRAME_MS, 20)
         }
