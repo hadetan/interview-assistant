@@ -57,8 +57,8 @@ class LiveStreamingSession extends EventEmitter {
         this.audioConverter = null;
         this.chunkInfo = new Map();
         this.streamingConfig = options.streamingConfig || {};
-        this.silenceFillMs = Math.max(50, Number(this.streamingConfig.silenceFillMs) || 200);
-        this.silenceFrameMs = Math.min(100, Math.max(10, Number(this.streamingConfig.silenceFrameMs) || 20));
+        this.silenceFillMs = Math.max(50, Number(this.streamingConfig.silenceFillMs) || 1000);
+        this.silenceFrameMs = Math.min(500, Math.max(10, Number(this.streamingConfig.silenceFrameMs) || 100));
         this.silenceInterval = null;
         this.lastSendTs = 0;
         this.lastChunkMeta = null;
@@ -68,6 +68,9 @@ class LiveStreamingSession extends EventEmitter {
         this.silenceSuppressedUntil = 0;
         this.maxSilenceFailures = Math.max(1, Number(this.streamingConfig.silenceFailureThreshold) || 5);
         this.silenceBackoffMs = Math.max(1000, Number(this.streamingConfig.silenceBackoffMs) || 10000);
+        this.pcmBuffer = Buffer.alloc(0);
+        this.firstChunkMeta = null;
+        this.TARGET_CHUNK_SIZE = 3200; // Target chunk size: ~100ms of audio (16000Hz * 2 bytes * 0.1s = 3200 bytes)
 
         // Listen for transcription events from the Live API client
         this.client.on('transcription', (data) => {
@@ -77,22 +80,16 @@ class LiveStreamingSession extends EventEmitter {
                 return;
             }
 
-            // Gemini often fluctuates between sending cumulative transcript and fragment deltas.
-            // We need to merge sensibly so the FE shows a proper, growing transcript rather than
-            // a series of single-chunk replacements.
             const previousServer = this.lastServerTranscript || '';
             if (absoluteText === previousServer) {
-                // identical message, ignore
                 return;
             }
 
             let delta = '';
-            // 1) Cumulative new text from server: it starts with previousServer
             if (absoluteText.startsWith(previousServer) && previousServer.length > 0) {
                 delta = absoluteText.slice(previousServer.length);
                 this.transcript = absoluteText;
             } else if (previousServer.endsWith(absoluteText) && absoluteText.length > 0) {
-                // 2) server only sent a suffix fragment that's already part of previous; ignore
                 return;
             } else if (absoluteText.includes(previousServer) && previousServer.length > 0) {
                 // If the server text includes the previous server text but does not
@@ -101,7 +98,6 @@ class LiveStreamingSession extends EventEmitter {
                 // message. Instead, fall back to overlap-based merging below.
                 // We'll treat it via the overlap logic (fall-through).
             } else {
-                // 4) server likely sent a fragment delta (non-overlapping) - attempt to merge with overlap.
                 // Find largest overlap between previousServer suffix and absoluteText prefix.
                 const maxOverlap = Math.min(previousServer.length, absoluteText.length);
                 let overlap = 0;
@@ -111,19 +107,14 @@ class LiveStreamingSession extends EventEmitter {
                             overlap = k;
                             break;
                         }
-                    } catch (err) {
-                        // Ignore slicing errors
-                    }
+                    } catch (err) { }
                 }
                 delta = absoluteText.slice(overlap);
                 this.transcript = (this.transcript || '') + delta;
             }
-            // keep lastServerTranscript for next comparison
             this.lastServerTranscript = absoluteText;
 
-            // attach latency hint if present
             const latencyMs = typeof data.latencyMs === 'number' ? data.latencyMs : undefined;
-            // pipeline latency from MediaRecorder client timestamp to now
             let pipelineMs = undefined;
             try {
                 const info = this.chunkInfo.get(this.lastSequence);
@@ -178,25 +169,37 @@ class LiveStreamingSession extends EventEmitter {
         try {
             await this.client.connect();
             log('info', `Session ${this.id} Live API connected`);
-            
-            // Start the audio converter with callback to send PCM to Live API
             this.audioConverter = new PersistentAudioConverter({
                 mimeType: this.inputMimeType,
                 onData: (pcmChunk, info) => {
                     if (!this.terminated && pcmChunk.length > 0) {
                         try {
                             const producedAt = info?.producedAt;
-                            const meta = this.buildChunkMeta(producedAt);
-                            // Calculate an approximate conversion latency
-                            const conversionMs = (typeof producedAt === 'number' && this.lastChunkReceivedAt)
-                                ? Math.max(0, producedAt - this.lastChunkReceivedAt)
-                                : undefined;
-                            // attach the conversion metric so it can be emitted later if needed
-                            this.client.sendAudio(pcmChunk, meta);
-                            // small log to help observe converter latency
-                            if (typeof conversionMs === 'number') {
-                                this.lastConversionMs = conversionMs;
-                                log('info', `Session ${this.id} conversion latency ~${conversionMs}ms`);
+                            if (this.pcmBuffer.length === 0) {
+                                this.firstChunkMeta = this.buildChunkMeta(producedAt);
+                            }
+
+                            this.pcmBuffer = Buffer.concat([this.pcmBuffer, pcmChunk]);
+
+                            if (this.pcmBuffer.length >= this.TARGET_CHUNK_SIZE) {
+                                const chunkToSend = this.pcmBuffer;
+                                const metaToSend = this.firstChunkMeta;
+
+                                this.pcmBuffer = Buffer.alloc(0);
+                                this.firstChunkMeta = null;
+
+                                const conversionMs = (typeof metaToSend?.segmentProducedTs === 'number' && this.lastChunkReceivedAt)
+                                    ? Math.max(0, metaToSend.segmentProducedTs - this.lastChunkReceivedAt)
+                                    : undefined;
+
+                                this.client.sendAudio(chunkToSend, metaToSend);
+
+                                if (typeof conversionMs === 'number') {
+                                    this.lastConversionMs = conversionMs;
+                                    if (Math.random() < 0.05) {
+                                        log('info', `Session ${this.id} conversion latency ~${conversionMs}ms`);
+                                    }
+                                }
                             }
                         } catch (err) {
                             log('error', `Session ${this.id} failed to send audio: ${err.message}`);
@@ -209,7 +212,7 @@ class LiveStreamingSession extends EventEmitter {
             });
             this.audioConverter.start();
             this.startSilenceFiller();
-            
+
         } catch (error) {
             log('error', `Session ${this.id} failed to connect: ${error.message}`);
             throw error;
@@ -246,20 +249,15 @@ class LiveStreamingSession extends EventEmitter {
             };
             this.chunkInfo.set(chunk.sequence, meta);
             this.lastChunkMeta = meta;
-            // prune older entries to avoid unbounded memory growth
             if (this.chunkInfo.size > 512) {
-                // remove the oldest
                 const keys = Array.from(this.chunkInfo.keys()).sort((a, b) => a - b);
                 for (let i = 0; i < (keys.length - 256); i += 1) {
                     this.chunkInfo.delete(keys[i]);
                 }
             }
         }
-        
-        // Push WebM chunk to the persistent ffmpeg process
-        // The converter will output PCM chunks via the onData callback
+
         if (this.audioConverter) {
-            // Track when we last received a MediaRecorder chunk
             this.lastChunkReceivedAt = Date.now();
             this.audioConverter.push(chunk.buffer);
         }
@@ -267,14 +265,25 @@ class LiveStreamingSession extends EventEmitter {
 
     async stop() {
         this.terminated = true;
-        
+
         if (this.audioConverter) {
             this.audioConverter.stop();
             this.audioConverter = null;
         }
 
+        // Flush any remaining audio in the buffer
+        if (this.pcmBuffer && this.pcmBuffer.length > 0) {
+            try {
+                log('info', `Session ${this.id} flushing remaining ${this.pcmBuffer.length} bytes`);
+                this.client.sendAudio(this.pcmBuffer, this.firstChunkMeta);
+            } catch (err) {
+                log('warn', `Session ${this.id} failed to flush audio: ${err.message}`);
+            }
+            this.pcmBuffer = Buffer.alloc(0);
+        }
+
         this.stopSilenceFiller();
-        
+
         try {
             await this.client.disconnect();
         } catch (error) {
@@ -414,10 +423,10 @@ class StreamingTranscriptionService extends EventEmitter {
         if (this.config.streaming?.mock) {
             return new MockStreamingClient();
         }
-        
+
         // Use Live API model - gemini-2.0-flash-live-001 or similar
         const model = this.config.providerConfig?.gemini?.model || 'gemini-2.0-flash-live-001';
-        
+
         return new GeminiLiveClient({
             apiKey: this.config.providerConfig?.gemini?.apiKey,
             model: model,
@@ -474,7 +483,7 @@ class StreamingTranscriptionService extends EventEmitter {
         });
 
         this.sessions.set(sessionId, session);
-        
+
         // Start the Live API connection
         try {
             await session.start();
@@ -484,7 +493,7 @@ class StreamingTranscriptionService extends EventEmitter {
             this.sessions.delete(sessionId);
             throw error;
         }
-        
+
         return sessionId;
     }
 

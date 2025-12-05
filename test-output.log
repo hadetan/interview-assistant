@@ -1,0 +1,21 @@
+
+> poc-screen-and-audio-capture@1.0.0 test:latency
+> mocha test/latency.test.js --timeout 60000
+
+[LiveAPI] 2025-12-05T13:45:25.946Z GeminiLiveClient loaded from /home/asus/ws/poc-screen-and-audio-capture/transcription/streaming/live-client.js
+
+
+  Live Transcription Latency Tests
+[LatencyTest] 2025-12-05T13:45:25.955Z GEMINI_API_KEY not found in environment. Using mock client for testing.
+[LatencyTest] 2025-12-05T13:45:25.955Z Using sample WAV file: /home/asus/ws/poc-screen-and-audio-capture/sample/sample.wav
+    Real-time Transcription Lag Test
+[WAVStreamer] 2025-12-05T13:45:25.965Z WAV format: 48000Hz, 2ch, 16bit
+[WAVStreamer] 2025-12-05T13:45:25.965Z Bytes per second: 192000, Target chunk size: 19200 bytes
+[WAVStreamer] 2025-12-05T13:45:25.965Z Chunk duration: 100ms, Speed: 1x
+[LatencyTest] 2025-12-05T13:45:25.967Z 🚀 Starting latency test...
+[LatencyTest] 2025-12-05T13:45:25.967Z Mock client connected
+[Transcription:Streaming] 2025-12-05T13:45:25.967Z Session latency-test Live API connected
+[AudioConverter] 2025-12-05T13:45:25.970Z Persistent audio converter started
+[WAVStreamer] 2025-12-05T13:45:25.971Z Starting stream from /home/asus/ws/poc-screen-and-audio-capture/sample/sample.wav
+[Transcription:Streaming] 2025-12-05T13:45:31.085Z Session latency-test queue lag 5118ms exceeded 5000ms; pausing audio for 750ms
+[LatencyTest] 2025-12-05T13:45:31.085Z Session warning: Audio paused for 750ms because queue lag hit 5118ms
