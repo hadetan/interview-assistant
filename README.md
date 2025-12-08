@@ -1,6 +1,6 @@
 # Screen & Audio Capture
 
-Electron proof of concept for capturing the entire screen with optional system audio across Linux, macOS, and Windows. Recordings are saved as `.webm` files in the user's `Videos/` directory with timestamped filenames.
+Electron proof of concept for capturing the entire screen with optional system audio across Linux, macOS, and Windows. The renderer is a React + Vite experience that talks to the isolated Electron preload layer via `window.electronAPI`. Recordings are saved as `.webm` files in the user's `Videos/` directory with timestamped filenames.
 
 ## Prerequisites
 - Node.js 18+ (tested with v22.20.0) and npm 9+.
@@ -12,10 +12,16 @@ Electron proof of concept for capturing the entire screen with optional system a
 ```bash
 cd /home/asus/ws/poc-screen-and-audio-capture
 npm install
-npm start
+npm run dev
 ```
 
-Click **Start Recording** to launch the desktop portal, choose the desired screen/window, then use **Stop Recording** to finalize the `.webm`. Status messages highlight whether system audio is included and where the file was saved.
+The `dev` script launches Vite's React renderer (with hot reload) and Electron side-by-side. Click **Start Recording** to launch the desktop portal, choose the desired screen/window, then use **Stop Recording** to finalize the `.webm`. Status messages highlight whether system audio is included and where the file was saved.
+
+Need to run only the renderer or Electron entry points?
+
+- `npm run dev:renderer` – start Vite alone (useful for styling/DOM work)
+- `npm run dev:electron` – run Electron that points at an existing dev server (expects Vite to already be running)
+- `npm start` – launch Electron against the last production renderer build (falls back to raw `src/` files if the build is missing)
 
 ## AI Transcription (AssemblyAI)
 - Copy `.env.example` to `.env` and set `ASSEMBLYAI_API_KEY`. No other providers are supported.
@@ -51,7 +57,13 @@ TRANSCRIPTION_CHUNK_TIMESLICE_MS=200 npm start
 - The streaming service now logs end-to-end timing (capture → IPC → converter → WebSocket → transcript) so you can confirm whether latency spikes originate in the app or with the provider.
 
 ## Building Installers
-Electron Builder can generate platform-specific artifacts:
+Always produce a fresh renderer bundle before packaging:
+
+```bash
+npm run build:renderer   # emits dist/renderer/** for Electron to load
+```
+
+`npm run build` already performs the renderer build and then invokes Electron Builder, but running it standalone is useful when testing UI output without packaging. Electron Builder can generate platform-specific artifacts:
 - **Linux AppImage**
 	```bash
 	npm run build -- --linux
@@ -68,6 +80,17 @@ Electron Builder can generate platform-specific artifacts:
 The resulting files appear under `dist/` with names such as `ScreenAudioCapture-<version>-mac.dmg`, `ScreenAudioCapture-<version>-win.exe`, and `ScreenAudioCapture-<version>-x86_64.AppImage`.
 
 > **macOS signing**: Replace the sample publisher identifiers with your Team ID and run notarization before distributing. The provided entitlements plist enables Screen Recording and audio input permissions.
+
+### Bundling environment into a packaged app
+
+If a `.env` file exists at the project root when you run `npm run build`, electron-builder will copy it into the app resources and the app will load it at runtime so services (like AssemblyAI) are available in the packaged artifact.
+
+Notes:
+- We intentionally do **not** commit `.env` to the repo by default. If you want the packaged app to include runtime environment variables, create a `.env` locally or supply CI steps that generate it prior to running `npm run build`.
+- Alternatively, you can override environment variables at runtime by exporting them before launching the AppImage:
+	```bash
+	ASSEMBLYAI_API_KEY=... ./dist/ScreenAudioCapture-1.0.0-x86_64.AppImage
+	```
 
 ## Platform Audio Notes
 - **Linux**: PipeWire delivers system audio alongside the desktop stream. If tracks are unavailable, the app continues with video-only capture.

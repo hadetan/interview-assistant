@@ -1,9 +1,24 @@
-require('dotenv').config();
+const fs = require('node:fs');
+const path = require('node:path');
+// Load `.env` from packaged resourcesPath first (for production builds), then fall back to working dir
+const { config: dotenvConfig } = require('dotenv');
+try {
+    const resourcesEnvPath = path.join(process.resourcesPath || process.cwd(), '.env');
+    if (fs.existsSync(resourcesEnvPath)) {
+        dotenvConfig({ path: resourcesEnvPath });
+        console.log('[Main] Loaded environment from resources .env');
+    } else {
+        dotenvConfig();
+        console.log('[Main] Loaded environment from project .env (if present)');
+    }
+} catch (err) {
+    // ensure we fallback silently in dev
+    dotenvConfig();
+}
 
 const { app, BrowserWindow, ipcMain, desktopCapturer } = require('electron');
-const path = require('node:path');
-const loadTranscriptionConfig = require('./config/transcription');
-const { createTranscriptionService } = require('./transcription');
+const loadTranscriptionConfig = require('../config/transcription');
+const { createTranscriptionService } = require('../transcription');
 
 if (process.platform === 'linux') {
     app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
@@ -13,6 +28,14 @@ let transcriptionService = null;
 let transcriptionInitPromise = null;
 let transcriptionConfig = null;
 const sessionWindowMap = new Map();
+
+const resolveRendererEntry = () => {
+    const distEntry = path.join(__dirname, '..', 'dist', 'renderer', 'index.html');
+    if (fs.existsSync(distEntry)) {
+        return distEntry;
+    }
+    return path.join(__dirname, '..', 'src', 'index.html');
+};
 
 const createMainWindow = () => {
     const mainWindow = new BrowserWindow({
@@ -26,10 +49,10 @@ const createMainWindow = () => {
         }
     });
 
-    mainWindow.loadFile(path.join(__dirname, 'src/index.html'));
-
     if (process.env.ELECTRON_START_URL) {
         mainWindow.loadURL(process.env.ELECTRON_START_URL);
+    } else {
+        mainWindow.loadFile(resolveRendererEntry());
     }
 };
 

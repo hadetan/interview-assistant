@@ -2,10 +2,14 @@
   "name": "poc-screen-and-audio-capture",
   "version": "1.0.0",
   "description": "Screen and audio capture recorder.",
-  "main": "main.js",
+  "main": "electron/main.js",
   "scripts": {
+    "dev": "concurrently \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && cross-env ELECTRON_START_URL=http://127.0.0.1:5173 electron .",
     "start": "electron .",
-    "build": "electron-builder",
+    "build": "npm run build:renderer && electron-builder",
+    "build:renderer": "vite build",
     "test:assembly": "node scripts/test-realtime-assembly.js"
   },
   "keywords": [],
@@ -15,13 +19,19 @@
   "build": {
     "appId": "com.example.screenaudiocapture",
     "files": [
-      "main.js",
-      "preload.js",
-      "src/**",
+      "electron/**",
+      "dist/renderer/**",
       "config/**",
       "transcription/**",
       "utils/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "./.env",
+        "to": ".env",
+        "filter": ["**/*"]
+      }
     ],
     "mac": {
       "target": [
@@ -61,12 +71,19 @@
     }
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
     "electron": "^39.2.4",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "vite": "^5.2.0",
+    "wait-on": "^7.2.0"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "fluent-ffmpeg": "^2.1.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "ws": "^8.18.0"
   }
 }

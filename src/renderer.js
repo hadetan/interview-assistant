@@ -384,6 +384,12 @@ window.addEventListener('beforeunload', () => {
 updateButtonStates();
 updateStatus('Idle');
 
+if (import.meta?.hot) {
+    import.meta.hot.accept(() => {
+        window.location.reload();
+    });
+}
+
 function ensureLatencyWatchdog() {
     if (latencyWatchdogTimer) {
         return;
