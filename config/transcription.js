@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const toInteger = (value, defaultValue) => {
     if (value === undefined || value === null || value === '') {
         return defaultValue;
@@ -18,7 +20,7 @@ module.exports = function loadTranscriptionConfig() {
         TRANSCRIPTION_SILENCE_FRAME_MS
     } = process.env;
 
-    const provider = (TRANSCRIPTION_PROVIDER || 'assembly').toLowerCase();
+    const provider = (TRANSCRIPTION_PROVIDER).toLowerCase();
 
     return {
         provider,

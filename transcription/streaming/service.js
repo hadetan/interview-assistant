@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { AssemblyLiveClient } = require('./assembly-client');
+const { AssemblyLiveClient } = require('./providers/assembly-client');
 const { PersistentAudioConverter } = require('./audio-converter');
 
 const LOG_PREFIX = '[Transcription:Streaming]';
