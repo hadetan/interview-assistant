@@ -34,6 +34,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const MIN = 20; const MAX = 5000;
         return Math.min(MAX, Math.max(MIN, parsed));
     },
+    controlWindow: {
+        onToggleCapture: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = () => callback();
+            ipcRenderer.on('control-window:toggle-capture', listener);
+            return () => ipcRenderer.removeListener('control-window:toggle-capture', listener);
+        }
+    },
     transcription: {
         startSession: (metadata) => ipcRenderer.invoke('transcription:start', metadata),
         stopSession: (sessionId) => ipcRenderer.invoke('transcription:stop', { sessionId }),

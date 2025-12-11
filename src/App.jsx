@@ -106,12 +106,40 @@ const resolveWarningMessage = (payload = {}) => {
 
 const preferredMimeType = resolvePreferredMimeType();
 
+const WINDOW_VARIANTS = {
+    CONTROL: 'control',
+    TRANSCRIPT: 'transcript'
+};
+
+const resolveWindowVariant = () => {
+    if (typeof window === 'undefined') {
+        return WINDOW_VARIANTS.TRANSCRIPT;
+    }
+    const params = new URLSearchParams(window.location.search || '');
+    return params.get('window') || WINDOW_VARIANTS.TRANSCRIPT;
+};
+
 function App() {
     const [status, setStatus] = useState('Idle');
     const [transcript, setTranscript] = useState('');
     const [isSelectingSource, setIsSelectingSource] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const [latencyStatus, setLatencyStatus] = useState('');
+
+    const windowVariant = useMemo(() => resolveWindowVariant(), []);
+    const isControlWindow = windowVariant === WINDOW_VARIANTS.CONTROL;
+
+    useEffect(() => {
+        if (typeof document === 'undefined') {
+            return () => {};
+        }
+        document.body.dataset.windowMode = windowVariant;
+        return () => {
+            if (document.body.dataset.windowMode === windowVariant) {
+                delete document.body.dataset.windowMode;
+            }
+        };
+    }, [windowVariant]);
 
     const chunkTimeslice = useMemo(() => {
         if (typeof electronAPI?.getChunkTimesliceMs === 'function') {
@@ -137,6 +165,10 @@ function App() {
     const latencyTimerRef = useRef(null);
     const lastLatencyTsRef = useRef(0);
     const latencyLabelRef = useRef('');
+    const controlStartRef = useRef(null);
+    const controlStopRef = useRef(null);
+    const streamingStateRef = useRef(false);
+    const selectingSourceRef = useRef(false);
 
     const resetTranscriptionListener = useCallback(() => {
         if (typeof stopTranscriptionListenerRef.current === 'function') {
@@ -184,7 +216,7 @@ function App() {
         resetTranscriptionListener();
         const currentSessionId = sessionIdRef.current;
         sessionIdRef.current = null;
-        if (currentSessionId && electronAPI?.transcription?.stopSession) {
+        if (isControlWindow && currentSessionId && electronAPI?.transcription?.stopSession) {
             try {
                 await electronAPI.transcription.stopSession(currentSessionId);
             } catch (_error) {
@@ -194,7 +226,7 @@ function App() {
         localTranscriptRef.current = '';
         setTranscript('');
         resetLatencyWatchdog();
-    }, [resetLatencyWatchdog, resetTranscriptionListener]);
+    }, [isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
 
     const stopCapture = useCallback(async () => {
         if (mediaRecorderRef.current) {
@@ -211,7 +243,10 @@ function App() {
         }
         chunkSequenceRef.current = 0;
         recordingMimeTypeRef.current = preferredMimeType || DEFAULT_MIME;
+        setIsSelectingSource(false);
+        selectingSourceRef.current = false;
         setIsStreaming(false);
+        streamingStateRef.current = false;
         await teardownSession();
     }, [teardownSession]);
 
@@ -243,15 +278,32 @@ function App() {
         }
         resetTranscriptionListener();
         stopTranscriptionListenerRef.current = electronAPI.transcription.onEvent((payload = {}) => {
-            if (!sessionIdRef.current || payload.sessionId !== sessionIdRef.current) {
+            const eventSessionId = payload.sessionId;
+            if (!eventSessionId) {
                 return;
             }
+
+            if (isControlWindow) {
+                if (!sessionIdRef.current || eventSessionId !== sessionIdRef.current) {
+                    return;
+                }
+            } else if (!sessionIdRef.current && payload.type === 'started') {
+                sessionIdRef.current = eventSessionId;
+            } else if (sessionIdRef.current !== eventSessionId) {
+                if (payload.type !== 'stopped') {
+                    return;
+                }
+            }
+
             switch (payload.type) {
                 case 'started':
                     ensureLatencyWatchdog();
                     lastLatencyTsRef.current = Date.now();
                     latencyLabelRef.current = '';
                     setStatus('Streaming transcription active.');
+                    setIsStreaming(true);
+                    streamingStateRef.current = true;
+                    selectingSourceRef.current = false;
                     break;
                 case 'update': {
                     const serverText = typeof payload.text === 'string' ? payload.text : '';
@@ -281,12 +333,35 @@ function App() {
                     setStatus('Transcription session stopped.');
                     localTranscriptRef.current = '';
                     setTranscript('');
+                    setIsStreaming(false);
+                    streamingStateRef.current = false;
+                    if (!isControlWindow) {
+                        sessionIdRef.current = null;
+                    }
                     break;
                 default:
                     break;
             }
         });
-    }, [ensureLatencyWatchdog, resetLatencyWatchdog, resetTranscriptionListener, updateLatencyStatus]);
+    }, [ensureLatencyWatchdog, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener, updateLatencyStatus]);
+
+    useEffect(() => {
+        if (isControlWindow) {
+            return () => {};
+        }
+        attachTranscriptionEvents();
+        return () => {
+            resetTranscriptionListener();
+        };
+    }, [attachTranscriptionEvents, isControlWindow, resetTranscriptionListener]);
+
+    useEffect(() => {
+        streamingStateRef.current = isStreaming;
+    }, [isStreaming]);
+
+    useEffect(() => {
+        selectingSourceRef.current = isSelectingSource;
+    }, [isSelectingSource]);
 
     const startStreamingWithSource = useCallback(async (source) => {
         const sourceId = source?.id;
@@ -295,6 +370,7 @@ function App() {
             return;
         }
         setIsSelectingSource(true);
+        selectingSourceRef.current = true;
         setStatus('Preparing capture stream…');
         const videoConstraints = buildVideoConstraints(sourceId);
         const audioConstraints = buildAudioConstraints(sourceId, platform);
@@ -308,6 +384,7 @@ function App() {
             console.error('Failed to obtain capture stream', error);
             setStatus(`Failed to capture system audio: ${error?.message || error}`);
             setIsSelectingSource(false);
+            selectingSourceRef.current = false;
             return;
         }
         captureStreamRef.current = stream;
@@ -315,6 +392,7 @@ function App() {
         if (!audioTracks.length) {
             setStatus('No system audio track detected.');
             setIsSelectingSource(false);
+            selectingSourceRef.current = false;
             return;
         }
         const audioStream = new MediaStream(audioTracks);
@@ -328,6 +406,7 @@ function App() {
             console.error('Failed to start transcription session', error);
             setStatus(`Transcription unavailable: ${error?.message || 'unknown error'}`);
             setIsSelectingSource(false);
+            selectingSourceRef.current = false;
             await stopCapture();
             return;
         }
@@ -361,6 +440,8 @@ function App() {
         setStatus('Capturing system audio…');
         setIsStreaming(true);
         setIsSelectingSource(false);
+        streamingStateRef.current = true;
+        selectingSourceRef.current = false;
     }, [attachTranscriptionEvents, chunkTimeslice, handleChunk, platform, stopCapture]);
 
     const startRecording = useCallback(async () => {
@@ -369,10 +450,12 @@ function App() {
             return;
         }
         setIsSelectingSource(true);
+        selectingSourceRef.current = true;
         setStatus('Requesting capture sources…');
         try {
             const sources = await electronAPI.getDesktopSources({ types: ['screen', 'window'] });
             setIsSelectingSource(false);
+            selectingSourceRef.current = false;
             if (!sources?.length) {
                 setStatus('No sources returned.');
                 return;
@@ -381,6 +464,7 @@ function App() {
         } catch (error) {
             console.error('Failed to list sources', error);
             setIsSelectingSource(false);
+            selectingSourceRef.current = false;
             setStatus(`Failed to list sources: ${error?.message || 'Unknown error'}`);
         }
     }, [startStreamingWithSource]);
@@ -392,7 +476,33 @@ function App() {
     }, [stopCapture]);
 
     useEffect(() => {
-        if (typeof window === 'undefined') {
+        if (!isControlWindow) {
+            return () => {};
+        }
+        const registerToggle = electronAPI?.controlWindow?.onToggleCapture;
+        if (typeof registerToggle !== 'function') {
+            return () => {};
+        }
+        const unsubscribe = registerToggle(async () => {
+            try {
+                if (streamingStateRef.current || selectingSourceRef.current) {
+                    await stopRecording();
+                } else {
+                    await startRecording();
+                }
+            } catch (error) {
+                console.error('Failed to toggle capture via shortcut', error);
+            }
+        });
+        return () => {
+            if (typeof unsubscribe === 'function') {
+                unsubscribe();
+            }
+        };
+    }, [isControlWindow, startRecording, stopRecording]);
+
+    useEffect(() => {
+        if (!isControlWindow || typeof window === 'undefined') {
             return () => {};
         }
         const handleBeforeUnload = () => {
@@ -403,56 +513,53 @@ function App() {
             window.removeEventListener('beforeunload', handleBeforeUnload);
             stopCapture().catch(() => {});
         };
-    }, [stopCapture]);
+    }, [isControlWindow, stopCapture]);
 
     const canStart = !isStreaming && !isSelectingSource;
     const canStop = isStreaming;
 
-    return (
-        <div className="app-shell">
-            <main className="app-card">
-                <header className="app-header">
-                    <div>
-                        <p className="eyebrow">Screen &amp; audio capture</p>
-                        <h1>Realtime transcription studio</h1>
-                        <p className="subhead">
-                            Capture any desktop source, stream PCM audio straight into AssemblyAI, and watch transcripts
-                            materialize with latency instrumentation built-in.
-                        </p>
-                    </div>
-                    <span className="badge">{platform}</span>
+    const renderControlStrip = () => {
+        const startLabel = isSelectingSource ? 'Starting…' : 'Start';
+        return (
+            <div className="control-shell">
+                <div className="control-strip" aria-live="polite">
+                    <button
+                        ref={controlStartRef}
+                        className="control-button control-start"
+                        disabled={!canStart}
+                    >
+                        {startLabel}
+                    </button>
+                    <button
+                        ref={controlStopRef}
+                        className="control-button control-stop"
+                        disabled={!canStop}
+                    >
+                        Stop
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
+    const renderTranscriptPanel = () => (
+        <div className="transcript-shell">
+            <section className="transcript-panel" aria-live="polite">
+                <header className="transcript-heading">
+                    <span className={`state-dot ${isStreaming ? 'state-dot-live' : ''}`} aria-hidden="true" />
+                    <span className="heading-chip">{isStreaming ? 'Streaming' : 'Idle'}</span>
                 </header>
-
-                <section className="controls" aria-live="polite">
-                    <button className="cta" onClick={startRecording} disabled={!canStart}>
-                        {isSelectingSource ? 'Connecting…' : 'Start capture'}
-                    </button>
-                    <button className="ghost" onClick={stopRecording} disabled={!canStop}>
-                        Stop session
-                    </button>
-                    <div className="status-stack">
-                        <span className="status-label">{status}</span>
-                        <span className="status-subtle">
-                            {latencyStatus || `Chunk cadence: ${chunkTimeslice}ms`}
-                        </span>
-                    </div>
-                </section>
-
-                <section className="transcript-panel">
-                    <header>
-                        <h2 className="transcript-title">Live transcript</h2>
-                        <div className="meta-row">
-                            <span className="meta-chip">Timeslice {chunkTimeslice} ms</span>
-                            <span className="meta-chip">{isStreaming ? 'Streaming' : 'Idle'}</span>
-                        </div>
-                    </header>
-                    <div className="transcript-body" aria-live="polite">
-                        {transcript || 'Waiting for audio…'}
-                    </div>
-                </section>
-            </main>
+                <div className="transcript-body">
+                    {transcript || 'Transcription will appear here once capture starts.'}
+                </div>
+                <footer className="transcript-meta">
+                    <span>{latencyStatus || `Chunk cadence ${chunkTimeslice} ms`}</span>
+                </footer>
+            </section>
         </div>
     );
+
+    return isControlWindow ? renderControlStrip() : renderTranscriptPanel();
 }
 
 export default App;
