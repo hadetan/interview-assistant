@@ -203,12 +203,12 @@
                 if (!devtoolsOpen) {
                     devtoolsOpen = true;
                     state.leaves.push({ start: Date.now(), reason: 'devtools-open' });
-                    console.warn('[PoC] DevTools likely opened.');
+                    console.warn('DevTools likely opened.');
                 }
             } else {
                 if (devtoolsOpen) {
                     devtoolsOpen = false;
-                    console.warn('[PoC] DevTools likely closed.');
+                    console.warn('DevTools likely closed.');
                 }
             }
         }
@@ -230,7 +230,7 @@
 
             if (resizeBurst >= 5) {
                 state.leaves.push({ start: t, reason: 'rapid-resize-burst' });
-                console.warn('[PoC] Rapid resize burst detected.');
+                console.warn('Rapid resize burst detected.');
             }
         });
     })();
@@ -245,7 +245,7 @@
                     start: Date.now(),
                     reason: 'key-' + e.key.toLowerCase()
                 });
-                console.warn('[PoC] Suspicious key:', e.key);
+                console.warn('Suspicious key:', e.key);
             }
         });
     })();
@@ -269,7 +269,7 @@
             if (idle > 20000 && !warned) {
                 warned = true;
                 state.leaves.push({ start: Date.now(), reason: 'inactivity-20s' });
-                console.warn('[PoC] Extended inactivity detected.');
+                console.warn('Extended inactivity detected.');
             }
         }, 2000);
     })();
@@ -278,12 +278,12 @@
     (function clipboardDetector() {
         document.addEventListener('copy', () => {
             state.leaves.push({ start: Date.now(), reason: 'copy-event' });
-            console.warn('[PoC] Copy event');
+            console.warn('Copy event');
         });
 
         document.addEventListener('paste', () => {
             state.leaves.push({ start: Date.now(), reason: 'paste-event' });
-            console.warn('[PoC] Paste event');
+            console.warn('Paste event');
         });
     })();
 
@@ -298,7 +298,7 @@
 
             if (diff < 10) {
                 state.leaves.push({ start: t, reason: 'scroll-too-fast' });
-                console.warn('[PoC] Scroll spike detected.');
+                console.warn('Scroll spike detected.');
             }
         });
     })();
@@ -312,7 +312,7 @@
             if (document.visibilityState === 'visible') {
                 if (nowt - lastSwitch < 150) {
                     state.leaves.push({ start: nowt, reason: 'rapid-tab-switch' });
-                    console.warn('[PoC] Rapid tab switching detected.');
+                    console.warn('Rapid tab switching detected.');
                 }
                 lastSwitch = nowt;
             }
@@ -329,7 +329,7 @@
                 const dy = Math.abs(e.clientY - lastY);
                 if (dx > 200 || dy > 200) {
                     state.leaves.push({ start: Date.now(), reason: 'mouse-teleport' });
-                    console.warn('[PoC] Mouse teleport movement detected.');
+                    console.warn('Mouse teleport movement detected.');
                 }
             }
             lastX = e.clientX;
@@ -348,7 +348,7 @@
                 count++;
                 if (count >= 3) {
                     state.leaves.push({ start: t, reason: 'focus-flicker' });
-                    console.warn('[PoC] Rapid focus flicker detected.');
+                    console.warn('Rapid focus flicker detected.');
                 }
             } else count = 1;
             lastFocus = t;
@@ -363,7 +363,7 @@
             const cur = window.scrollY;
             if (Math.abs(cur - lastPos) > 1500) {
                 state.leaves.push({ start: Date.now(), reason: 'massive-scroll-jump' });
-                console.warn('[PoC] Suspicious massive scroll jump.');
+                console.warn('Suspicious massive scroll jump.');
             }
             lastPos = cur;
         });
@@ -380,7 +380,7 @@
             // Very fast re-entry → suspicious (like switching windows)
             if (t - lastEnter < 100) {
                 state.leaves.push({ start: t, reason: 'rapid-reenter' });
-                console.warn('[PoC] Mouse re-entered too quickly.');
+                console.warn('Mouse re-entered too quickly.');
             }
 
             lastEnter = t;
@@ -395,7 +395,7 @@
                 reason: 'mouse-left-page'
             });
 
-            console.warn('[PoC] Mouse left the page boundary.');
+            console.warn('Mouse left the page boundary.');
         });
 
         // Edge-case: leaving viewport via OUT event
@@ -403,10 +403,71 @@
             if (!e.relatedTarget && !e.toElement) {
                 const t = Date.now();
                 state.leaves.push({ start: t, reason: 'mouse-outside-viewport' });
-                console.warn('[PoC] Mouse exited viewport (mouseout).');
+                console.warn('Mouse exited viewport (mouseout).');
             }
         });
     })();
+
+    // 12. WebGPU Timing Stall Detector - Detects hidden overlays or apps that hog GPU cycles.
+    (function webgpuTimingDetector() {
+        if (!('gpu' in navigator)) return;
+
+        let last = performance.now();
+
+        function tick() {
+            const nowt = performance.now();
+            const diff = nowt - last;
+            last = nowt;
+
+            // Normal frames ~16ms (60hz), 8ms (120hz), 4ms (240hz)
+            // A hidden overlay grabbing GPU will cause a fat spike.
+            if (diff > 100) {
+                state.leaves.push({ start: Date.now(), reason: 'gpu-stall-overlay' });
+                console.warn('Massive GPU stall — possible hidden overlay.');
+            }
+
+            requestAnimationFrame(tick);
+        }
+
+        requestAnimationFrame(tick);
+    })();
+
+    // 13. Invisible Focus-Steal Detector - Hidden windows or AI tools sometimes pull transient focus.
+    // This detects sub-50ms focus flashes impossible for humans.
+    (function ghostFocusStealDetector() {
+        let last = Date.now();
+
+        window.addEventListener('blur', () => last = Date.now());
+
+        window.addEventListener('focus', () => {
+            const nowt = Date.now();
+            if (nowt - last < 50) {
+                state.leaves.push({ start: nowt, reason: 'ghost-focus-steal' });
+                console.warn('Impossible fast focus steal — likely a ghost overlay.');
+            }
+        });
+    })();
+
+    // 14. Memory Pressure Spike Detector - Off-screen apps that OCR the screen cause RAM pressure spikes.
+    (function memoryPressureDetector() {
+        if (!performance.memory) return;
+
+        let lastUsed = performance.memory.usedJSHeapSize;
+
+        setInterval(() => {
+            const used = performance.memory.usedJSHeapSize;
+
+            // Sudden unprovoked jumps = something reading lots of data
+            if (used - lastUsed > 5_000_000) { // +5MB in under a second
+                state.leaves.push({ start: Date.now(), reason: 'memory-ocr-spike' });
+                console.warn('Large JS memory spike — possible screen OCR tool.');
+            }
+
+            lastUsed = used;
+        }, 1000);
+    })();
+
+
 
 
     // ====================================================================================
