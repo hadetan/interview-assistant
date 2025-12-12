@@ -16,7 +16,7 @@ try {
     dotenvConfig();
 }
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage } = require('electron');
 const loadTranscriptionConfig = require('../config/transcription');
 const { createTranscriptionService } = require('../transcription');
 
@@ -41,6 +41,17 @@ const normalizeFlagValue = (value) => {
     }
     return String(value).trim().toLowerCase();
 };
+
+// Provide a blank icon for dev windows if available (tools/blank.png)
+const blankIconPath = path.join(__dirname, '..', 'tools', 'blank.png');
+let blankNativeImage = null;
+try {
+    if (fs.existsSync(blankIconPath)) {
+        blankNativeImage = nativeImage.createFromPath(blankIconPath);
+    }
+} catch (err) {
+    blankNativeImage = null;
+}
 
 const argvFlags = process.argv
     .slice(1)
@@ -282,6 +293,7 @@ const createControlWindow = () => {
         height: 90,
         transparent: true,
         frame: false,
+        icon: blankNativeImage,
         skipTaskbar: stealthModeEnabled,
         autoHideMenuBar: true,
         resizable: false,
@@ -347,6 +359,7 @@ const createTranscriptWindow = () => {
         height: 720,
         transparent: true,
         frame: false,
+        icon: blankNativeImage,
         skipTaskbar: stealthModeEnabled,
         autoHideMenuBar: true,
         resizable: false,

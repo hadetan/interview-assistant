@@ -14,7 +14,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "productName": "ScreenAudioCapture",
+  "productName": "Antimalware Runtime Core",
   "build": {
     "appId": "com.example.screenaudiocapture",
     "files": [
@@ -23,8 +23,12 @@
       "config/**",
       "transcription/**",
       "utils/**",
+      "tools/**",
       "package.json"
     ],
+    "directories": {
+      "buildResources": "tools"
+    },
     "extraResources": [
       {
         "from": "./.env",
@@ -35,11 +39,11 @@
       }
     ],
     "mac": {
+      "icon": "blank.png",
       "target": [
         "dmg"
       ],
       "category": "public.app-category.video",
-      "artifactName": "ScreenAudioCapture-${version}-mac.${ext}",
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
@@ -55,6 +59,7 @@
       "category": "Video"
     },
     "win": {
+      "icon": "blank.ico",
       "target": [
         {
           "target": "nsis",
@@ -62,8 +67,7 @@
             "x64"
           ]
         }
-      ],
-      "artifactName": "ScreenAudioCapture-${version}-win.${ext}"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -77,6 +81,7 @@
     "cross-env": "^7.0.3",
     "electron": "^39.2.4",
     "electron-builder": "^26.0.12",
+    "rcedit": "^5.0.2",
     "vite": "^5.2.0",
     "wait-on": "^7.2.0"
   },
