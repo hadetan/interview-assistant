@@ -29,7 +29,15 @@ test('StreamingTranscriptionService starts session, receives update, and stops',
 
     const sessionId = await service.startSession({ sourceName: 'svc-test', converterFactory });
 
-    const updatePromise = once(service, 'session-update');
+    const updatePromise = new Promise((resolve) => {
+        const handler = (update) => {
+            if (update?.isFinal) {
+                service.off('session-update', handler);
+                resolve(update);
+            }
+        };
+        service.on('session-update', handler);
+    });
 
     const buffer = Buffer.alloc(4000);
     service.pushChunk(sessionId, {
@@ -38,9 +46,10 @@ test('StreamingTranscriptionService starts session, receives update, and stops',
         captureTimestamp: Date.now()
     });
 
-    const [update] = await updatePromise;
+    const update = await updatePromise;
     assert.equal(update.sessionId, sessionId);
     assert.ok(typeof update.text === 'string');
+    assert.equal(update.isFinal, true);
 
     await service.stopSession(sessionId);
     assert.equal(service.sessions.size, 0);

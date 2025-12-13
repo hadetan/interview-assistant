@@ -24,3 +24,6 @@ npm run dev
 - `CTRL + ALT + G`: Clear conversation
 - `CTRL + [up/down/left/right]` arrow: Position top/bottom/left/right the windows
 - `CTRL + SHIFT + ALT + B`: Hide or show windows
+
+## Controls unsupported
+- `CTRL + ALT + ENTER`: Send the asked question to A.I.

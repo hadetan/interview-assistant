@@ -43,15 +43,24 @@ test('LiveStreamingSession processes chunks and emits update', async () => {
     await session.start();
     assert.equal(converter.started, true);
 
-    const updatePromise = once(session, 'update');
+    const finalUpdatePromise = new Promise((resolve) => {
+        const handler = (payload) => {
+            if (payload?.isFinal) {
+                session.off('update', handler);
+                resolve(payload);
+            }
+        };
+        session.on('update', handler);
+    });
 
     const buffer = Buffer.alloc(4000); // > TARGET_CHUNK_SIZE to force flush
     session.addChunk({ buffer, sequence: 1, captureTimestamp: Date.now() });
     session.addChunk({ buffer, sequence: 2, captureTimestamp: Date.now() });
     session.addChunk({ buffer, sequence: 3, captureTimestamp: Date.now() });
 
-    const [payload] = await updatePromise;
+    const payload = await finalUpdatePromise;
     assert.ok(payload.text.includes('mock transcript'));
+    assert.equal(payload.isFinal, true);
 
     await session.stop();
     assert.equal(converter.stopped, true);

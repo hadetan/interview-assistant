@@ -30,10 +30,15 @@ class LiveStreamingSession extends EventEmitter {
         this.inputMimeType = 'audio/webm;codecs=opus';
         this.audioConverter = null;
         this.chunkInfo = new Map();
-        this.streamingConfig = options.streamingConfig ;
+        this.streamingConfig = options.streamingConfig || {};
         this.ffmpegPath = options.ffmpegPath || null;
-        this.silenceFillMs = Math.max(50, Number(this.streamingConfig.silenceFillMs));
-        this.silenceFrameMs = Math.min(500, Math.max(50, Number(this.streamingConfig.silenceFrameMs)));
+        const numOr = (value, fallback) => {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        };
+
+        this.silenceFillMs = clampNumber(numOr(this.streamingConfig.silenceFillMs, 120), 50, 400);
+        this.silenceFrameMs = clampNumber(numOr(this.streamingConfig.silenceFrameMs, 60), 30, 500);
         this.silenceInterval = null;
         this.lastSendTs = 0;
         this.lastChunkMeta = null;
@@ -41,28 +46,28 @@ class LiveStreamingSession extends EventEmitter {
         this.lastServerTranscript = '';
         this.silenceFailureCount = 0;
         this.silenceSuppressedUntil = 0;
-        this.maxSilenceFailures = Math.max(1, Number(this.streamingConfig.silenceFailureThreshold));
-        this.silenceBackoffMs = Math.max(1000, Number(this.streamingConfig.silenceBackoffMs));
+        this.maxSilenceFailures = Math.max(1, numOr(this.streamingConfig.silenceFailureThreshold, 5));
+        this.silenceBackoffMs = Math.max(1000, numOr(this.streamingConfig.silenceBackoffMs, 10_000));
         this.pcmBuffer = Buffer.alloc(0);
         this.pendingFlushTimer = null;
-        this.maxPendingChunkMs = Math.max(50, Number(this.streamingConfig.maxPendingChunkMs));
+        this.maxPendingChunkMs = clampNumber(numOr(this.streamingConfig.maxPendingChunkMs, 60), 30, 90);
         this.firstChunkMeta = null;
         this.TARGET_CHUNK_SIZE = 3200; // Target chunk size: ~100ms of audio (16000Hz * 2 bytes * 0.1s = 3200 bytes)
         this.heartbeatInterval = null;
-        this.heartbeatIntervalMs = Math.max(100, Number(this.streamingConfig.heartbeatIntervalMs));
+        this.heartbeatIntervalMs = Math.max(100, numOr(this.streamingConfig.heartbeatIntervalMs, 250));
         this.silenceDurationMs = 0;
-        this.silenceNotifyMs = Math.max(50, Number(this.streamingConfig.silenceNotifyMs));
-        this.silenceSuppressMs = Math.max(this.silenceNotifyMs, Number(this.streamingConfig.silenceSuppressMs));
-        this.silenceEnergyThreshold = Math.max(1, Number(this.streamingConfig.silenceEnergyThreshold));
+        this.silenceNotifyMs = Math.max(50, numOr(this.streamingConfig.silenceNotifyMs, 600));
+        this.silenceSuppressMs = Math.max(this.silenceNotifyMs, numOr(this.streamingConfig.silenceSuppressMs, 900));
+        this.silenceEnergyThreshold = Math.max(1, numOr(this.streamingConfig.silenceEnergyThreshold, 350));
         this.lastSpeechAt = Date.now();
         this.lastServerUpdateAt = 0;
         this.reconnecting = false;
         this.reconnectAttempt = 0;
         this.reconnectPromise = null;
-        this.reconnectBackoffMs = Math.max(200, Number(this.streamingConfig.reconnectBackoffMs));
-        this.maxReconnectAttempts = Math.max(1, Number(this.streamingConfig.maxReconnectAttempts));
+        this.reconnectBackoffMs = Math.max(200, numOr(this.streamingConfig.reconnectBackoffMs, 750));
+        this.maxReconnectAttempts = Math.max(1, numOr(this.streamingConfig.maxReconnectAttempts, 6));
         this.latestPcmStats = null;
-        const vadCfg = this.streamingConfig.vad;
+        const vadCfg = this.streamingConfig.vad || {};
         this.vadConfig = {
             enabled: Boolean(vadCfg.enabled),
             frameMs: vadCfg.frameMs,
@@ -85,6 +90,13 @@ class LiveStreamingSession extends EventEmitter {
             if (!absoluteText) {
                 return;
             }
+            const isFinal = Boolean(
+                data?.isFinal
+                || data?.end_of_turn
+                || data?.endOfTurn
+                || data?.message_type === 'final_transcript'
+                || data?.type === 'final_transcript'
+            );
             const now = Date.now();
             this.lastServerUpdateAt = now;
             this.lastSpeechAt = now;
@@ -134,8 +146,9 @@ class LiveStreamingSession extends EventEmitter {
             } catch (err) { }
             log('info', `Session ${this.id} update (${this.transcript.length} chars)`);
             this.emit('update', {
-                text: this.transcript,
+                text: absoluteText,
                 delta,
+                isFinal,
                 latencyMs,
                 conversionMs: this.lastConversionMs,
                 pipelineMs

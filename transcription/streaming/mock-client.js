@@ -18,7 +18,17 @@ class MockStreamingClient extends EventEmitter {
         this.counter += 1;
         if (this.counter % 3 === 0) {
             await sleep(100);
-            this.emit('transcription', { text: `mock transcript ${this.counter}` });
+            this.emit('transcription', {
+                text: `mock transcript ${this.counter}`,
+                type: 'final_transcript',
+                isFinal: true
+            });
+        } else {
+            this.emit('transcription', {
+                text: `mock partial ${this.counter}`,
+                type: 'partial_transcript',
+                isFinal: false
+            });
         }
         return true;
     }

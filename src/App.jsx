@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ChatBubble from './components/ChatBubble';
 import './App.css';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
@@ -6,61 +7,11 @@ const DEFAULT_MIME = 'audio/webm;codecs=opus';
 const STALL_THRESHOLD_MS = 1500;
 const STALL_WATCH_INTERVAL_MS = 1000;
 const SCROLL_STEP_PX = 140;
-
-const appendWithOverlap = (base = '', incoming = '') => {
-    if (!base) return incoming || '';
-    if (!incoming) return base || '';
-    const maxOverlap = Math.min(base.length, incoming.length);
-    for (let k = maxOverlap; k > 0; k -= 1) {
-        if (base.slice(base.length - k) === incoming.slice(0, k)) {
-            return base + incoming.slice(k);
-        }
-    }
-    const rTrimmed = base.replace(/\s+$/, '');
-    const baseLastChar = rTrimmed.length ? rTrimmed[rTrimmed.length - 1] : '';
-    const incomingTrimLeft = incoming.replace(/^\s+/, '');
-    const incomingFirstChar = incomingTrimLeft.length ? incomingTrimLeft[0] : '';
-    const isBaseWhitespaceEnding = /\s$/.test(base);
-    const isIncomingWhitespaceStarting = /^\s/.test(incoming);
-    const isBaseSentencePunct = /[.!?\n]/.test(baseLastChar);
-    const isIncomingUppercase = /[A-Z]/.test(incomingFirstChar);
-    const isIncomingPunctuation = /^[.,!?:;"'()\[\]{}]/.test(incomingFirstChar);
-    if (isBaseWhitespaceEnding || isIncomingWhitespaceStarting) {
-        return base + incoming;
-    }
-    if (isBaseSentencePunct || (isIncomingUppercase && !isIncomingPunctuation)) {
-        return base + ' ' + incomingTrimLeft;
-    }
-    const lastSpaceIdx = base.lastIndexOf(' ');
-    const lastToken = lastSpaceIdx >= 0 ? base.slice(lastSpaceIdx + 1) : base;
-    const incomingFirstToken = incomingTrimLeft.split(/\s+/)[0] || '';
-    const isBaseWordy = /^[A-Za-z0-9]+$/.test(lastToken);
-    const isIncomingWordy = /^[A-Za-z0-9]+$/.test(incomingFirstToken);
-    const needsForcedSeparator = isBaseWordy && isIncomingWordy && !isIncomingPunctuation;
-    if (lastSpaceIdx >= 0) {
-        if (isIncomingPunctuation) {
-            return base + incomingTrimLeft;
-        }
-        if (lastToken.length > 2 && incomingFirstToken.length > 0) {
-            return base + ' ' + incomingTrimLeft;
-        }
-        return base + incoming;
-    }
-        if (lastToken.length > 2 && incomingFirstToken.length > 0) {
-        return base + ' ' + incomingTrimLeft;
-    }
-        if (needsForcedSeparator) {
-            return base + ' ' + incomingTrimLeft;
-        }
-    return base + incoming;
-};
+const CONTINUATION_LINGER_MS = 2500;
 
 const resolvePreferredMimeType = () => {
     if (typeof window === 'undefined' || typeof window.MediaRecorder === 'undefined') {
         return '';
-    if (needsForcedSeparator) {
-        return base + ' ' + incomingTrimLeft;
-    }
     }
     if (typeof window.MediaRecorder.isTypeSupported !== 'function') {
         return '';
@@ -131,7 +82,7 @@ const resolveWindowVariant = () => {
 
 function App() {
     const [status, setStatus] = useState('Idle');
-    const [transcript, setTranscript] = useState('');
+    const [messages, setMessages] = useState([]);
     const [isSelectingSource, setIsSelectingSource] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const [latencyStatus, setLatencyStatus] = useState('');
@@ -214,7 +165,10 @@ function App() {
     const stopTranscriptionListenerRef = useRef(null);
     const chunkSequenceRef = useRef(0);
     const recordingMimeTypeRef = useRef(preferredMimeType || DEFAULT_MIME);
-    const localTranscriptRef = useRef('');
+    const messageIdCounterRef = useRef(0);
+    const pendingMessageIdRef = useRef(null);
+    const continuationMessageIdRef = useRef(null);
+    const lastMessageUpdateTsRef = useRef(0);
     const latencyTimerRef = useRef(null);
     const lastLatencyTsRef = useRef(0);
     const latencyLabelRef = useRef('');
@@ -292,8 +246,10 @@ function App() {
                 // ignore and keep tearing down
             }
         }
-        localTranscriptRef.current = '';
-        setTranscript('');
+        pendingMessageIdRef.current = null;
+        continuationMessageIdRef.current = null;
+        lastMessageUpdateTsRef.current = 0;
+        setMessages([]);
         setIsAtBottom(true);
         resetLatencyWatchdog();
     }, [isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
@@ -379,12 +335,93 @@ function App() {
                 case 'update': {
                     const serverText = typeof payload.text === 'string' ? payload.text : '';
                     const delta = typeof payload.delta === 'string' ? payload.delta : '';
-                    if (delta) {
-                        localTranscriptRef.current = appendWithOverlap(localTranscriptRef.current, delta);
-                    } else if (serverText) {
-                        localTranscriptRef.current = appendWithOverlap(localTranscriptRef.current, serverText);
+                    const isFinal = Boolean(payload.isFinal);
+                    const content = delta || serverText;
+                    const now = Date.now();
+                    const mergeText = (base, incoming, preferAppend) => {
+                        const safeBase = base || '';
+                        const safeIncoming = incoming || '';
+                        if (!safeIncoming) return safeBase;
+                        if (!safeBase) return safeIncoming;
+                        if (safeIncoming === safeBase) return safeBase;
+
+                        const baseTrimRight = safeBase.replace(/\s+$/g, '');
+                        const incomingTrimLeft = safeIncoming.replace(/^\s+/g, '');
+
+                        if (incomingTrimLeft.startsWith(baseTrimRight)) return incomingTrimLeft;
+                        if (baseTrimRight.endsWith(incomingTrimLeft)) return baseTrimRight;
+
+                        let overlap = 0;
+                        const maxOverlap = Math.min(baseTrimRight.length, incomingTrimLeft.length);
+                        for (let k = maxOverlap; k > 0; k -= 1) {
+                            if (baseTrimRight.slice(baseTrimRight.length - k) === incomingTrimLeft.slice(0, k)) {
+                                overlap = k;
+                                break;
+                            }
+                        }
+
+                        const remainder = incomingTrimLeft.slice(overlap);
+                        const needsSpace = remainder
+                            && /[A-Za-z0-9]$/.test(baseTrimRight)
+                            && /^[A-Za-z0-9]/.test(remainder)
+                            && !/^[,.;:!?]/.test(remainder)
+                            && !/\s$/.test(baseTrimRight);
+                        const joined = `${baseTrimRight}${needsSpace ? ' ' : ''}${remainder}`;
+                        return preferAppend ? joined : joined;
+                    };
+                    const lastUpdateTs = lastMessageUpdateTsRef.current || 0;
+                    const canContinue = lastUpdateTs > 0 && (now - lastUpdateTs) <= CONTINUATION_LINGER_MS;
+                    const continuationId = canContinue ? continuationMessageIdRef.current : null;
+                    if (!canContinue) {
+                        continuationMessageIdRef.current = null;
                     }
-                    setTranscript(localTranscriptRef.current);
+                    if (content) {
+                        setMessages((prev) => {
+                            const next = [...prev];
+                            const pendingId = pendingMessageIdRef.current;
+                            const targetId = pendingId || continuationId;
+
+                            if (!isFinal) {
+                                if (targetId) {
+                                    const updated = next.map((msg) => {
+                                        if (msg.id !== targetId) return msg;
+                                        const appended = mergeText(msg.text, delta ? delta : serverText || content, Boolean(delta));
+                                        return { ...msg, text: appended, isFinal: false };
+                                    });
+                                    pendingMessageIdRef.current = targetId;
+                                    continuationMessageIdRef.current = targetId;
+                                    lastMessageUpdateTsRef.current = now;
+                                    return updated;
+                                }
+                                const id = `msg-${Date.now()}-${messageIdCounterRef.current += 1}`;
+                                pendingMessageIdRef.current = id;
+                                continuationMessageIdRef.current = id;
+                                lastMessageUpdateTsRef.current = now;
+                                next.push({ id, text: content, isFinal: false, ts: now, side: 'left' });
+                                return next;
+                            }
+
+                            if (targetId) {
+                                pendingMessageIdRef.current = null;
+                                continuationMessageIdRef.current = targetId;
+                                lastMessageUpdateTsRef.current = now;
+                                return next.map((msg) => {
+                                    if (msg.id !== targetId) return msg;
+                                    const finalizedText = serverText
+                                        ? serverText
+                                        : mergeText(msg.text, delta ? delta : content, Boolean(delta));
+                                    return { ...msg, text: finalizedText, isFinal: true };
+                                });
+                            }
+
+                            const id = `msg-${Date.now()}-${messageIdCounterRef.current += 1}`;
+                            pendingMessageIdRef.current = null;
+                            continuationMessageIdRef.current = id;
+                            lastMessageUpdateTsRef.current = now;
+                            next.push({ id, text: serverText || content, isFinal: true, ts: now, side: 'left' });
+                            return next;
+                        });
+                    }
                     lastLatencyTsRef.current = Date.now();
                     latencyLabelRef.current = `WS ${payload.latencyMs ?? '-'}ms | E2E ${payload.pipelineMs ?? '-'}ms | CONV ${payload.conversionMs ?? '-'}ms`;
                     latencySuffixRef.current = '';
@@ -410,11 +447,13 @@ function App() {
                     latencySuffixRef.current = '';
                     latencySuffixReasonRef.current = '';
                     setStatus('Transcription session stopped.');
-                    localTranscriptRef.current = '';
-                    setTranscript('');
+                    pendingMessageIdRef.current = null;
+                    setMessages([]);
                     setIsAtBottom(true);
                     setIsStreaming(false);
                     streamingStateRef.current = false;
+                    continuationMessageIdRef.current = null;
+                    lastMessageUpdateTsRef.current = 0;
                     if (!isControlWindow) {
                         sessionIdRef.current = null;
                     }
@@ -541,8 +580,8 @@ function App() {
         });
         chunkSequenceRef.current = 0;
         recorder.start(chunkTimeslice);
-        localTranscriptRef.current = '';
-        setTranscript('');
+        pendingMessageIdRef.current = null;
+        setMessages([]);
         setStatus('Capturing system audio…');
         setIsStreaming(true);
         setIsSelectingSource(false);
@@ -594,8 +633,8 @@ function App() {
     }, []);
 
     const clearTranscript = useCallback(() => {
-        localTranscriptRef.current = '';
-        setTranscript('');
+        pendingMessageIdRef.current = null;
+        setMessages([]);
         if (transcriptRef.current) {
             transcriptRef.current.scrollTop = 0;
         }
@@ -698,7 +737,7 @@ function App() {
         // defer to next frame to ensure layout is ready
         const rafId = window.requestAnimationFrame(scrollToBottom);
         return () => window.cancelAnimationFrame(rafId);
-    }, [isAtBottom, isControlWindow, transcript]);
+    }, [isAtBottom, isControlWindow, messages]);
 
     useEffect(() => {
         if (!isControlWindow || typeof window === 'undefined') {
@@ -725,14 +764,18 @@ function App() {
                     <button
                         ref={controlStartRef}
                         className="control-button control-start"
+                        type="button"
                         disabled={!canStart}
+                        onClick={startRecording}
                     >
                         {startLabel}
                     </button>
                     <button
                         ref={controlStopRef}
                         className="control-button control-stop"
+                        type="button"
                         disabled={!canStop}
+                        onClick={stopRecording}
                     >
                         Stop
                     </button>
@@ -749,7 +792,20 @@ function App() {
                     <span className="heading-chip">{isStreaming ? 'Streaming' : 'Idle'}</span>
                 </header>
                 <div className="transcript-body" ref={transcriptRef}>
-                    {transcript || 'Transcription will appear here once capture starts.'}
+                    <div className="chat-container">
+                        {messages.length === 0 ? (
+                            <div className="chat-placeholder">Transcription will appear here once capture starts.</div>
+                        ) : (
+                            messages.map((msg) => (
+                                <ChatBubble
+                                    key={msg.id}
+                                    side={msg.side || 'left'}
+                                    text={msg.text}
+                                    isFinal={msg.isFinal}
+                                />
+                            ))
+                        )}
+                    </div>
                 </div>
                 <footer className="transcript-meta">
                     <span>{latencyStatus || `Chunk cadence ${chunkTimeslice} ms`}</span>

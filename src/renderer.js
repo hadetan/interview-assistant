@@ -3,11 +3,19 @@ const stopButton = document.getElementById('stop');
 const statusLabel = document.getElementById('status');
 const transcriptOutput = document.getElementById('transcript-output');
 
-const platform = window.electronAPI.getPlatform();
-// Read chunk timeslice from preload-exposed env getter with defaults/validation
-const CHUNK_TIMESLICE_MS = (typeof window.electronAPI?.getChunkTimesliceMs === 'function')
-    ? Number(window.electronAPI.getChunkTimesliceMs())
+const electronAPI = typeof window !== 'undefined' ? (window.electronAPI || {}) : {};
+const transcriptionAPI = electronAPI?.transcription;
+const platform = typeof electronAPI?.getPlatform === 'function'
+    ? electronAPI.getPlatform()
+    : 'unknown';
+const CHUNK_TIMESLICE_MS = typeof electronAPI?.getChunkTimesliceMs === 'function'
+    ? Number(electronAPI.getChunkTimesliceMs())
     : 200;
+const DEFAULT_MIME = 'audio/webm;codecs=opus';
+const CONTINUATION_LINGER_MS = 2500;
+const STALL_THRESHOLD_MS = 1500;
+const STALL_WATCH_INTERVAL_MS = 1000;
+
 console.debug('Using CHUNK_TIMESLICE_MS =', CHUNK_TIMESLICE_MS);
 
 const resolvePreferredMimeType = () => {
@@ -30,163 +38,7 @@ const resolvePreferredMimeType = () => {
 
 const preferredMimeType = resolvePreferredMimeType();
 
-const buildRecorderOptions = () => {
-    if (!preferredMimeType) {
-        return {};
-    }
-    return { mimeType: preferredMimeType };
-};
-
-let mediaRecorder = null;
-let captureStream = null;
-let sessionId = null;
-let chunkSequence = 0;
-let awaitingSourceSelection = false;
-let stopTranscriptionListener = null;
-let recordingMimeType = preferredMimeType || 'audio/webm;codecs=opus';
-let lastLatencyLabel = '';
-let lastLatencyUpdateTs = 0;
-let latencySuffixLabel = '';
-let latencySuffixReason = '';
-let latencyWatchdogTimer = null;
-const STALL_THRESHOLD_MS = 1500;
-const STALL_WATCH_INTERVAL_MS = 1000;
-let localTranscript = '';
-
-function formatStalledLabel(durationMs) {
-    const seconds = Math.max(1, Math.round(Math.max(0, durationMs) / 1000));
-    return `(stalled ${seconds}s)`;
-}
-
-function appendWithOverlap(base, incoming) {
-    if (!base) return incoming || '';
-    if (!incoming) return base || '';
-
-    // Find largest overlap where base suffix equals incoming prefix
-    const maxOverlap = Math.min(base.length, incoming.length);
-    for (let k = maxOverlap; k > 0; k -= 1) {
-        try {
-            if (base.slice(base.length - k) === incoming.slice(0, k)) {
-                return base + incoming.slice(k);
-            }
-        } catch (err) {
-            // ignore and continue
-        }
-    }
-
-    // No overlap detected; decide if we should insert a separating space.
-    // Rules:
-    //  - If base ends with whitespace OR incoming starts with whitespace => no insert
-    //  - If base ends with sentence punctuation (.,!?\n) => insert a space
-    //  - If incoming starts with an uppercase letter => insert a space (likely new sentence)
-    //  - Otherwise, append directly (to avoid inserting spaces inside words)
-    const rTrimmed = base.replace(/\s+$/, '');
-    const baseLastChar = rTrimmed.length ? rTrimmed[rTrimmed.length - 1] : '';
-    const incomingTrimLeft = incoming.replace(/^\s+/, '');
-    const incomingFirstChar = incomingTrimLeft.length ? incomingTrimLeft[0] : '';
-
-    const isBaseWhitespaceEnding = /\s$/.test(base);
-    const isIncomingWhitespaceStarting = /^\s/.test(incoming);
-    const isBaseSentencePunct = /[.!?\n]/.test(baseLastChar);
-    const isIncomingUppercase = /[A-Z]/.test(incomingFirstChar);
-    const isIncomingPunctuation = /^[.,!?:;"'()\[\]{}]/.test(incomingFirstChar);
-
-    if (isBaseWhitespaceEnding || isIncomingWhitespaceStarting) {
-        return base + incoming;
-    }
-
-    if (isBaseSentencePunct || (isIncomingUppercase && !isIncomingPunctuation)) {
-        return base + ' ' + incomingTrimLeft;
-    }
-
-    // If both sides look like full words (not single-letter fragments), and they are alphanumeric,
-    // insert a separator so two words don't get concatenated without spaces (e.g., "Hello world" + "there").
-    const lastSpaceIdx = base.lastIndexOf(' ');
-    const lastToken = lastSpaceIdx >= 0 ? base.slice(lastSpaceIdx + 1) : base;
-    const incomingFirstToken = incomingTrimLeft.split(/\s+/)[0] || '';
-    const isBaseWordy = /^[A-Za-z0-9]+$/.test(lastToken);
-    const isIncomingWordy = /^[A-Za-z0-9]+$/.test(incomingFirstToken);
-    const needsForcedSeparator = isBaseWordy && isIncomingWordy && !isIncomingPunctuation;
-
-    // If base has a space (the last token is preceded by a space), and that
-    // last token is reasonably long (>2), assume it's a full word and we should
-    // insert a space between it and the incoming if the incoming also appears to
-    // start a word.
-    if (lastSpaceIdx >= 0) {
-        if (isIncomingPunctuation) {
-            return base + incomingTrimLeft;
-        }
-        if (lastToken.length > 2 && incomingFirstToken.length > 0) {
-            return base + ' ' + incomingTrimLeft;
-        }
-        if (needsForcedSeparator) {
-            return base + ' ' + incomingTrimLeft;
-        }
-        // short token (likely a fragment) — fall through: avoid inserting a space
-        return base + incoming;
-    }
-
-    // No spaces in base (single token so far). If base token length is large,
-    // it's likely a whole word and the incoming token should be separated.
-    if (lastToken.length > 3 && incomingFirstToken.length > 1) {
-        return base + ' ' + incomingTrimLeft;
-    }
-
-    if (needsForcedSeparator) {
-        return base + ' ' + incomingTrimLeft;
-    }
-
-    // Default: append directly to preserve continuity for partial words
-    return base + incoming;
-}
-
-const updateStatus = (message) => {
-    statusLabel.textContent = message;
-};
-
-const updateTranscript = (text) => {
-    transcriptOutput.textContent = text || '';
-};
-
-const updateButtonStates = ({ isFetching = false } = {}) => {
-    const isStreaming = Boolean(mediaRecorder && mediaRecorder.state !== 'inactive');
-    const busy = isFetching || awaitingSourceSelection;
-    startButton.disabled = busy || isStreaming;
-    stopButton.disabled = !isStreaming;
-};
-
-const resetTranscriptionListener = () => {
-    if (typeof stopTranscriptionListener === 'function') {
-        stopTranscriptionListener();
-        stopTranscriptionListener = null;
-    }
-};
-
-const teardownSession = async () => {
-    if (sessionId) {
-        await window.electronAPI.transcription.stopSession(sessionId).catch(() => {});
-        sessionId = null;
-    }
-    resetTranscriptionListener();
-    updateTranscript('');
-    resetLatencyWatchdog();
-    // clear local cached transcript state
-    localTranscript = '';
-};
-
-const stopCapture = async () => {
-    if (mediaRecorder) {
-        mediaRecorder.stop();
-        mediaRecorder = null;
-    }
-    if (captureStream) {
-        captureStream.getTracks().forEach((track) => track.stop());
-        captureStream = null;
-    }
-    await teardownSession();
-    chunkSequence = 0;
-    recordingMimeType = preferredMimeType || 'audio/webm;codecs=opus';
-};
+const buildRecorderOptions = (mimeType) => (mimeType ? { mimeType } : {});
 
 const buildVideoConstraints = (sourceId) => ({
     mandatory: {
@@ -207,8 +59,227 @@ const buildAudioConstraints = (sourceId) => {
     };
 };
 
+const mergeText = (base, incoming) => {
+    const safeBase = base || '';
+    const safeIncoming = incoming || '';
+    if (!safeIncoming) return safeBase;
+    if (!safeBase) return safeIncoming;
+    if (safeIncoming === safeBase) return safeBase;
+
+    const baseTrimRight = safeBase.replace(/\s+$/g, '');
+    const incomingTrimLeft = safeIncoming.replace(/^\s+/g, '');
+
+    if (incomingTrimLeft.startsWith(baseTrimRight)) return incomingTrimLeft;
+    if (baseTrimRight.endsWith(incomingTrimLeft)) return baseTrimRight;
+
+    let overlap = 0;
+    const maxOverlap = Math.min(baseTrimRight.length, incomingTrimLeft.length);
+    for (let k = maxOverlap; k > 0; k -= 1) {
+        if (baseTrimRight.slice(baseTrimRight.length - k) === incomingTrimLeft.slice(0, k)) {
+            overlap = k;
+            break;
+        }
+    }
+
+    const remainder = incomingTrimLeft.slice(overlap);
+    const needsSpace = remainder
+        && /[A-Za-z0-9]$/.test(baseTrimRight)
+        && /^[A-Za-z0-9]/.test(remainder)
+        && !/^[,.;:!?]/.test(remainder)
+        && !/\s$/.test(baseTrimRight);
+    return `${baseTrimRight}${needsSpace ? ' ' : ''}${remainder}`;
+};
+
+const formatStalledLabel = (durationMs) => {
+    const seconds = Math.max(1, Math.round(Math.max(0, durationMs) / 1000));
+    return `(stalled ${seconds}s)`;
+};
+
+let mediaRecorder = null;
+let captureStream = null;
+let sessionId = null;
+let stopTranscriptionListener = null;
+let chunkSequence = 0;
+let recordingMimeType = preferredMimeType || DEFAULT_MIME;
+let awaitingSourceSelection = false;
+
+let latencyWatchdogTimer = null;
+let lastLatencyLabel = '';
+let lastLatencyUpdateTs = 0;
+let latencySuffixLabel = '';
+let latencySuffixReason = '';
+
+let bubbleIdCounter = 0;
+let pendingBubbleId = null;
+let continuationBubbleId = null;
+let lastBubbleUpdateTs = 0;
+
+const clearTranscriptBubbles = () => {
+    if (!transcriptOutput) {
+        return;
+    }
+    transcriptOutput.innerHTML = '';
+    pendingBubbleId = null;
+    continuationBubbleId = null;
+    lastBubbleUpdateTs = 0;
+};
+
+const ensurePlaceholder = () => {
+    if (!transcriptOutput) {
+        return;
+    }
+    if (transcriptOutput.childElementCount === 0) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'chat-placeholder';
+        placeholder.textContent = 'Transcription will appear here once capture starts.';
+        transcriptOutput.appendChild(placeholder);
+    }
+};
+
+const removePlaceholder = () => {
+    if (!transcriptOutput) {
+        return;
+    }
+    const placeholder = transcriptOutput.querySelector('.chat-placeholder');
+    if (placeholder) {
+        transcriptOutput.removeChild(placeholder);
+    }
+};
+
+const createBubbleElement = (id, text, side) => {
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${side === 'right' ? 'right' : 'left'}`;
+    bubble.dataset.messageId = id;
+    bubble.dataset.final = 'false';
+    bubble.textContent = text || '';
+    return bubble;
+};
+
+const upsertBubble = ({ text, isFinal, side = 'left', append = false }) => {
+    if (!transcriptOutput) {
+        return;
+    }
+    if (!text && !isFinal) {
+        return;
+    }
+
+    removePlaceholder();
+
+    const now = Date.now();
+    const canContinue = continuationBubbleId
+        && lastBubbleUpdateTs
+        && (now - lastBubbleUpdateTs) <= CONTINUATION_LINGER_MS;
+    const targetId = pendingBubbleId || (canContinue ? continuationBubbleId : null);
+    if (!canContinue) {
+        continuationBubbleId = null;
+    }
+    const safeText = text || '';
+
+    if (!isFinal) {
+        if (targetId) {
+            const node = transcriptOutput.querySelector(`[data-message-id=\"${targetId}\"]`);
+            if (node) {
+                node.textContent = mergeText(node.textContent, safeText, append);
+            }
+            pendingBubbleId = targetId;
+            continuationBubbleId = targetId;
+            lastBubbleUpdateTs = now;
+            return;
+        }
+        const id = `msg-${Date.now()}-${bubbleIdCounter += 1}`;
+        pendingBubbleId = id;
+        continuationBubbleId = id;
+        lastBubbleUpdateTs = now;
+        transcriptOutput.appendChild(createBubbleElement(id, safeText, side));
+        transcriptOutput.scrollTop = transcriptOutput.scrollHeight;
+        return;
+    }
+
+    if (targetId) {
+        const node = transcriptOutput.querySelector(`[data-message-id=\"${targetId}\"]`);
+        pendingBubbleId = null;
+        continuationBubbleId = targetId;
+        lastBubbleUpdateTs = now;
+        if (node) {
+            const mergedText = safeText || mergeText(node.textContent, safeText, append);
+            node.textContent = mergedText || node.textContent;
+            node.dataset.final = 'true';
+            transcriptOutput.scrollTop = transcriptOutput.scrollHeight;
+            return;
+        }
+    }
+
+    const id = `msg-${Date.now()}-${bubbleIdCounter += 1}`;
+    pendingBubbleId = null;
+    continuationBubbleId = id;
+    lastBubbleUpdateTs = now;
+    const bubble = createBubbleElement(id, safeText, side);
+    bubble.dataset.final = 'true';
+    transcriptOutput.appendChild(bubble);
+    transcriptOutput.scrollTop = transcriptOutput.scrollHeight;
+};
+
+const updateStatus = (message) => {
+    if (!statusLabel) {
+        return;
+    }
+    statusLabel.textContent = message;
+};
+
+const updateButtonStates = ({ isFetching = false } = {}) => {
+    if (!startButton || !stopButton) {
+        return;
+    }
+    const isStreaming = Boolean(mediaRecorder && mediaRecorder.state !== 'inactive');
+    const busy = isFetching || awaitingSourceSelection;
+    startButton.disabled = busy || isStreaming;
+    stopButton.disabled = !isStreaming;
+};
+
+const resetTranscriptionListener = () => {
+    if (typeof stopTranscriptionListener === 'function') {
+        stopTranscriptionListener();
+    }
+    stopTranscriptionListener = null;
+};
+
+const teardownSession = async () => {
+    if (sessionId && transcriptionAPI?.stopSession) {
+        try {
+            await transcriptionAPI.stopSession(sessionId);
+        } catch (_error) {
+            // ignore cleanup failures
+        }
+    }
+    sessionId = null;
+    resetTranscriptionListener();
+    clearTranscriptBubbles();
+    ensurePlaceholder();
+    resetLatencyWatchdog();
+};
+
+const stopCapture = async () => {
+    if (mediaRecorder) {
+        try {
+            mediaRecorder.stop();
+        } catch (_error) {
+            // ignore
+        }
+        mediaRecorder = null;
+    }
+    if (captureStream) {
+        captureStream.getTracks().forEach((track) => track.stop());
+        captureStream = null;
+    }
+    chunkSequence = 0;
+    recordingMimeType = preferredMimeType || DEFAULT_MIME;
+    awaitingSourceSelection = false;
+    await teardownSession();
+    updateButtonStates();
+};
+
 const handleChunk = async (event) => {
-    if (!event?.data?.size || !sessionId) {
+    if (!event?.data?.size || !sessionId || !transcriptionAPI?.sendChunk) {
         return;
     }
 
@@ -217,7 +288,7 @@ const handleChunk = async (event) => {
         chunkSequence += 1;
         const arrayBuffer = await event.data.arrayBuffer();
         const captureTimestamp = Date.now();
-        window.electronAPI.transcription.sendChunk({
+        transcriptionAPI.sendChunk({
             sessionId,
             sequence,
             mimeType: recordingMimeType,
@@ -231,8 +302,11 @@ const handleChunk = async (event) => {
 };
 
 const attachTranscriptionEvents = () => {
+    if (typeof transcriptionAPI?.onEvent !== 'function') {
+        return;
+    }
     resetTranscriptionListener();
-    stopTranscriptionListener = window.electronAPI.transcription.onEvent((payload = {}) => {
+    stopTranscriptionListener = transcriptionAPI.onEvent((payload = {}) => {
         if (!sessionId || payload.sessionId !== sessionId) {
             return;
         }
@@ -243,17 +317,17 @@ const attachTranscriptionEvents = () => {
                 lastLatencyLabel = '';
                 lastLatencyUpdateTs = Date.now();
                 latencySuffixLabel = '';
+                latencySuffixReason = '';
                 updateStatus('Streaming transcription active.');
                 break;
             case 'update': {
                 const serverText = typeof payload.text === 'string' ? payload.text : '';
                 const delta = typeof payload.delta === 'string' ? payload.delta : '';
-                if (delta) {
-                    localTranscript = appendWithOverlap(localTranscript, delta);
-                } else if (serverText) {
-                    localTranscript = appendWithOverlap(localTranscript, serverText);
+                const isFinal = Boolean(payload.isFinal);
+                const content = delta || serverText;
+                if (content) {
+                    upsertBubble({ text: content, isFinal, side: 'left', append: Boolean(delta) });
                 }
-                updateTranscript(localTranscript || '');
                 lastLatencyUpdateTs = Date.now();
                 lastLatencyLabel = `WS ${payload.latencyMs ?? '-'}ms | E2E ${payload.pipelineMs ?? '-'}ms | CONV ${payload.conversionMs ?? '-'}ms`;
                 latencySuffixLabel = '';
@@ -280,8 +354,8 @@ const attachTranscriptionEvents = () => {
                 latencySuffixLabel = '';
                 latencySuffixReason = '';
                 updateStatus('Transcription session stopped.');
-                // clear cached transcript state when service signals stop
-                localTranscript = '';
+                clearTranscriptBubbles();
+                ensurePlaceholder();
                 break;
             case 'heartbeat': {
                 const state = payload.state || (payload.silent ? 'silence' : 'speech');
@@ -300,11 +374,9 @@ const attachTranscriptionEvents = () => {
                         latencySuffixLabel = '';
                         latencySuffixReason = '';
                     }
-                } else {
-                    if (latencySuffixReason !== 'stall') {
-                        latencySuffixLabel = '';
-                        latencySuffixReason = '';
-                    }
+                } else if (latencySuffixReason !== 'stall') {
+                    latencySuffixLabel = '';
+                    latencySuffixReason = '';
                 }
                 renderLatencyStatus();
                 break;
@@ -319,6 +391,12 @@ const startStreamingWithSource = async (source) => {
     const sourceId = source?.id;
     if (!sourceId) {
         updateStatus('No valid source selected.');
+        updateButtonStates();
+        return;
+    }
+    if (!transcriptionAPI?.startSession) {
+        updateStatus('Transcription API unavailable.');
+        updateButtonStates();
         return;
     }
 
@@ -351,7 +429,7 @@ const startStreamingWithSource = async (source) => {
 
     let sessionResponse;
     try {
-        sessionResponse = await window.electronAPI.transcription.startSession({
+        sessionResponse = await transcriptionAPI.startSession({
             sourceName: source.name || source.id,
             platform
         });
@@ -362,18 +440,19 @@ const startStreamingWithSource = async (source) => {
         updateButtonStates({ isFetching: false });
         return;
     }
-    sessionId = sessionResponse.sessionId;
+
+    sessionId = sessionResponse?.sessionId || null;
     attachTranscriptionEvents();
 
-    const recorderOptions = buildRecorderOptions();
+    const recorderOptions = buildRecorderOptions(preferredMimeType);
     try {
         mediaRecorder = new MediaRecorder(audioStream, recorderOptions);
     } catch (error) {
-        console.error('MediaRecorder error when applying preferred mime type', recorderOptions, error);
+        console.warn('MediaRecorder error when applying preferred mime type', recorderOptions, error);
         mediaRecorder = new MediaRecorder(audioStream);
     }
 
-    recordingMimeType = mediaRecorder.mimeType || preferredMimeType || 'audio/webm;codecs=opus';
+    recordingMimeType = mediaRecorder.mimeType || preferredMimeType || DEFAULT_MIME;
 
     mediaRecorder.addEventListener('dataavailable', handleChunk);
     mediaRecorder.addEventListener('error', async (event) => {
@@ -392,19 +471,24 @@ const startStreamingWithSource = async (source) => {
 
     chunkSequence = 0;
     mediaRecorder.start(CHUNK_TIMESLICE_MS);
-    // reset transcript cache for a new session
-    localTranscript = '';
+    clearTranscriptBubbles();
+    ensurePlaceholder();
     updateStatus('Capturing system audio…');
     updateButtonStates({ isFetching: false });
 };
 
 const promptSourceSelection = async () => {
+    if (typeof electronAPI?.getDesktopSources !== 'function') {
+        updateStatus('Desktop capture API unavailable in preload.');
+        return;
+    }
     awaitingSourceSelection = true;
-    updateButtonStates({ isFetching: true });
+    updateButtonStates();
 
     try {
-        const sources = await window.electronAPI.getDesktopSources({ types: ['screen', 'window'] });
+        const sources = await electronAPI.getDesktopSources({ types: ['screen', 'window'] });
         awaitingSourceSelection = false;
+        updateButtonStates();
 
         if (!sources?.length) {
             updateStatus('No sources returned.');
@@ -416,18 +500,22 @@ const promptSourceSelection = async () => {
         awaitingSourceSelection = false;
         console.error('Failed to list sources', error);
         updateStatus(`Failed to list sources: ${error?.message || 'Unknown error'}`);
-    } finally {
-        updateButtonStates({ isFetching: false });
+        updateButtonStates();
     }
 };
 
-startButton.addEventListener('click', promptSourceSelection);
-stopButton.addEventListener('click', async () => {
-    updateStatus('Stopping capture…');
-    await stopCapture();
-    updateStatus('Idle');
-    updateButtonStates();
-});
+if (startButton) {
+    startButton.addEventListener('click', promptSourceSelection);
+}
+
+if (stopButton) {
+    stopButton.addEventListener('click', async () => {
+        updateStatus('Stopping capture…');
+        await stopCapture();
+        updateStatus('Idle');
+        updateButtonStates();
+    });
+}
 
 window.addEventListener('beforeunload', () => {
     stopCapture().catch(() => {});
@@ -435,6 +523,7 @@ window.addEventListener('beforeunload', () => {
 
 updateButtonStates();
 updateStatus('Idle');
+ensurePlaceholder();
 
 if (import.meta?.hot) {
     import.meta.hot.accept(() => {
