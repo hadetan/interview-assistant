@@ -1,5 +1,5 @@
 const { EventEmitter } = require('node:events');
-const { StreamingTranscriptionService } = require('./streaming/service');
+const { StreamingTranscriptionService } = require('./streaming/streaming-service');
 
 class TranscriptionService extends EventEmitter {
     constructor(config) {

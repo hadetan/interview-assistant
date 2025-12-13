@@ -1,56 +1,17 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { AssemblyLiveClient } = require('./providers/assembly-client');
 const { PersistentAudioConverter } = require('./audio-converter');
 const { createVadInstance } = require('./vad');
-
-const LOG_PREFIX = '[Transcription:Streaming]';
-const log = (level, message, ...args) => {
-    const stamp = new Date().toISOString();
-    const logger = console[level] || console.log;
-    logger(`${LOG_PREFIX} ${stamp} ${message}`, ...args);
-};
-
-const clampNumber = (value, min, max) => {
-    if (!Number.isFinite(value)) {
-        return min;
-    }
-    return Math.min(max, Math.max(min, value));
-};
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-class MockStreamingClient extends EventEmitter {
-    constructor() {
-        super();
-        this.counter = 0;
-        this.connected = false;
-    }
-
-    async connect() {
-        this.connected = true;
-        log('info', 'Mock client connected');
-    }
-
-    async sendAudio(pcmBuffer) {
-        if (!this.connected) return;
-        this.counter += 1;
-        // Simulate transcription response every few chunks
-        if (this.counter % 3 === 0) {
-            await sleep(100);
-            this.emit('transcription', { text: `mock transcript ${this.counter}` });
-        }
-    }
-
-    async disconnect() {
-        this.connected = false;
-        log('info', 'Mock client disconnected');
-    }
-
-    isReady() {
-        return this.connected;
-    }
-}
+const { buildChunkMeta } = require('./packetizer');
+const { buildSilenceFrame } = require('./silence-filler');
+const {
+    log,
+    clampNumber,
+    sleep,
+    analyzePcmChunk,
+    computeChunkDurationMs,
+    computeLatencyBreakdown
+} = require('./helpers');
 
 /**
  * Live API Session using WebSocket connection with persistent audio conversion.
@@ -62,16 +23,17 @@ class LiveStreamingSession extends EventEmitter {
         this.id = options.sessionId;
         this.sourceName = options.sourceName;
         this.client = options.client;
+        this.converterFactory = options.converterFactory || ((converterOptions) => new PersistentAudioConverter(converterOptions));
         this.terminated = false;
         this.lastSequence = -1;
         this.transcript = '';
         this.inputMimeType = 'audio/webm;codecs=opus';
         this.audioConverter = null;
         this.chunkInfo = new Map();
-        this.streamingConfig = options.streamingConfig || {};
+        this.streamingConfig = options.streamingConfig;
         this.ffmpegPath = options.ffmpegPath || null;
-        this.silenceFillMs = Math.max(50, Number(this.streamingConfig.silenceFillMs) || 1000);
-        this.silenceFrameMs = Math.min(500, Math.max(50, Number(this.streamingConfig.silenceFrameMs) || 120));
+        this.silenceFillMs = Math.max(50, this.streamingConfig.silenceFillMs);
+        this.silenceFrameMs = Math.min(500, Math.max(50, this.streamingConfig.silenceFrameMs));
         this.silenceInterval = null;
         this.lastSendTs = 0;
         this.lastChunkMeta = null;
@@ -79,36 +41,36 @@ class LiveStreamingSession extends EventEmitter {
         this.lastServerTranscript = '';
         this.silenceFailureCount = 0;
         this.silenceSuppressedUntil = 0;
-        this.maxSilenceFailures = Math.max(1, Number(this.streamingConfig.silenceFailureThreshold) || 5);
-        this.silenceBackoffMs = Math.max(1000, Number(this.streamingConfig.silenceBackoffMs) || 10000);
+        this.maxSilenceFailures = Math.max(1, this.streamingConfig.silenceFailureThreshold);
+        this.silenceBackoffMs = Math.max(1000, this.streamingConfig.silenceBackoffMs);
         this.pcmBuffer = Buffer.alloc(0);
         this.pendingFlushTimer = null;
-        this.maxPendingChunkMs = Math.max(50, Number(this.streamingConfig.maxPendingChunkMs) || 150);
+        this.maxPendingChunkMs = Math.max(50, this.streamingConfig.maxPendingChunkMs);
         this.firstChunkMeta = null;
         this.TARGET_CHUNK_SIZE = 3200; // Target chunk size: ~100ms of audio (16000Hz * 2 bytes * 0.1s = 3200 bytes)
         this.heartbeatInterval = null;
-        this.heartbeatIntervalMs = Math.max(100, Number(this.streamingConfig.heartbeatIntervalMs) || 250);
+        this.heartbeatIntervalMs = Math.max(100, this.streamingConfig.heartbeatIntervalMs);
         this.silenceDurationMs = 0;
-        this.silenceNotifyMs = Math.max(50, Number(this.streamingConfig.silenceNotifyMs) || 600);
-        this.silenceSuppressMs = Math.max(this.silenceNotifyMs, Number(this.streamingConfig.silenceSuppressMs) || 900);
-        this.silenceEnergyThreshold = Math.max(1, Number(this.streamingConfig.silenceEnergyThreshold) || 350);
+        this.silenceNotifyMs = Math.max(50, this.streamingConfig.silenceNotifyMs);
+        this.silenceSuppressMs = Math.max(this.silenceNotifyMs, this.streamingConfig.silenceSuppressMs);
+        this.silenceEnergyThreshold = Math.max(1, this.streamingConfig.silenceEnergyThreshold);
         this.lastSpeechAt = Date.now();
         this.lastServerUpdateAt = 0;
         this.reconnecting = false;
         this.reconnectAttempt = 0;
         this.reconnectPromise = null;
-        this.reconnectBackoffMs = Math.max(200, Number(this.streamingConfig.reconnectBackoffMs) || 750);
-        this.maxReconnectAttempts = Math.max(1, Number(this.streamingConfig.maxReconnectAttempts) || 6);
+        this.reconnectBackoffMs = Math.max(200, this.streamingConfig.reconnectBackoffMs);
+        this.maxReconnectAttempts = Math.max(1, this.streamingConfig.maxReconnectAttempts);
         this.latestPcmStats = null;
         const vadCfg = this.streamingConfig.vad || {};
         this.vadConfig = {
-            enabled: Boolean(vadCfg.enabled),
+            enabled: true,
             frameMs: vadCfg.frameMs || 30,
-            aggressiveness: clampNumber(vadCfg.aggressiveness ?? 2, 0, 3),
-            minSpeechRatio: clampNumber(typeof vadCfg.minSpeechRatio === 'number' ? vadCfg.minSpeechRatio : 0.2, 0.01, 1),
-            speechHoldMs: Math.max(0, vadCfg.speechHoldMs ?? 300),
-            silenceHoldMs: Math.max(0, vadCfg.silenceHoldMs ?? 200),
-            fillerHoldMs: Math.max(0, vadCfg.fillerHoldMs ?? 600)
+            aggressiveness: vadCfg.aggressiveness,
+            minSpeechRatio: vadCfg.minSpeechRatio,
+            speechHoldMs: vadCfg.speechHoldMs,
+            silenceHoldMs: vadCfg.silenceHoldMs,
+            fillerHoldMs: vadCfg.fillerHoldMs
         };
         this.vadInstance = null;
         this.vadLastSpeechTs = 0;
@@ -140,11 +102,7 @@ class LiveStreamingSession extends EventEmitter {
             } else if (previousServer.endsWith(absoluteText) && absoluteText.length > 0) {
                 return;
             } else if (absoluteText.includes(previousServer) && previousServer.length > 0) {
-                // If the server text includes the previous server text but does not
-                // start with it, we avoid treating it as authoritative because that
-                // may drop an earlier prefix produced by the client or by another
-                // message. Instead, fall back to overlap-based merging below.
-                // We'll treat it via the overlap logic (fall-through).
+                // Overlap handled below
             } else {
                 // Find largest overlap between previousServer suffix and absoluteText prefix.
                 const maxOverlap = Math.min(previousServer.length, absoluteText.length);
@@ -169,7 +127,7 @@ class LiveStreamingSession extends EventEmitter {
                 if (info?.captureTs) {
                     pipelineMs = Date.now() - info.captureTs;
                 }
-                const breakdown = this.computeLatencyBreakdown(info);
+                const breakdown = computeLatencyBreakdown(info);
                 if (breakdown) {
                     log('info', `Session ${this.id} latency breakdown total:${breakdown.total}ms cap->ipc:${breakdown.captureToIpc ?? '-'}ms ipc->svc:${breakdown.ipcToService ?? '-'}ms svc->pcm:${breakdown.serviceToConverter ?? '-'}ms pcm->ws:${breakdown.converterToWs ?? '-'}ms ws->txt:${breakdown.wsToTranscript ?? '-'}ms`);
                 }
@@ -233,7 +191,7 @@ class LiveStreamingSession extends EventEmitter {
                     try {
                         const producedAt = info?.producedAt;
                         if (this.pcmBuffer.length === 0) {
-                            this.firstChunkMeta = this.buildChunkMeta(producedAt);
+                            this.firstChunkMeta = buildChunkMeta(this.lastChunkMeta, this.lastSequence, producedAt);
                         }
 
                         this.pcmBuffer = Buffer.concat([this.pcmBuffer, pcmChunk]);
@@ -258,7 +216,10 @@ class LiveStreamingSession extends EventEmitter {
                 log('info', `Session ${this.id} using FFmpeg from system PATH`);
             }
 
-            this.audioConverter = new PersistentAudioConverter(converterOptions);
+            this.audioConverter = this.converterFactory(converterOptions);
+            if (!this.audioConverter || typeof this.audioConverter.start !== 'function') {
+                throw new Error('Audio converter is not properly configured.');
+            }
             this.audioConverter.start();
             this.startHeartbeat();
             this.startSilenceFiller();
@@ -326,7 +287,9 @@ class LiveStreamingSession extends EventEmitter {
         }
 
         if (this.audioConverter) {
-            this.audioConverter.stop();
+            if (typeof this.audioConverter.stop === 'function') {
+                this.audioConverter.stop();
+            }
             this.audioConverter = null;
         }
 
@@ -352,49 +315,8 @@ class LiveStreamingSession extends EventEmitter {
         }
     }
 
-    buildChunkMeta(producedAt) {
-        const meta = this.lastChunkMeta ? { ...this.lastChunkMeta } : {};
-        if (this.lastChunkMeta) {
-            this.lastChunkMeta.converterProducedTs = producedAt;
-        }
-        meta.segmentProducedTs = producedAt;
-        if (typeof meta.sequence !== 'number') {
-            meta.sequence = this.lastSequence;
-        }
-        return meta;
-    }
-
-    computeLatencyBreakdown(info) {
-        if (!info?.captureTs) {
-            return null;
-        }
-        const now = Date.now();
-        const captureToIpc = typeof info.ipcTs === 'number' ? Math.max(0, info.ipcTs - info.captureTs) : undefined;
-        const ipcToService = typeof info.serviceReceivedTs === 'number'
-            ? Math.max(0, info.serviceReceivedTs - (info.ipcTs ?? info.captureTs))
-            : undefined;
-        const serviceToConverter = typeof info.converterProducedTs === 'number'
-            ? Math.max(0, info.converterProducedTs - (info.serviceReceivedTs ?? info.converterProducedTs))
-            : undefined;
-        const converterToWs = (typeof info.wsSendTs === 'number' && typeof info.converterProducedTs === 'number')
-            ? Math.max(0, info.wsSendTs - info.converterProducedTs)
-            : undefined;
-        const wsToTranscript = typeof info.wsSendTs === 'number'
-            ? Math.max(0, now - info.wsSendTs)
-            : undefined;
-        const total = Math.max(0, now - info.captureTs);
-        return {
-            captureToIpc,
-            ipcToService,
-            serviceToConverter,
-            converterToWs,
-            wsToTranscript,
-            total
-        };
-    }
-
     async initializeVad() {
-        if (!this.vadConfig.enabled || this.vadInstance) {
+        if (this.vadInstance) {
             return;
         }
         try {
@@ -510,7 +432,8 @@ class LiveStreamingSession extends EventEmitter {
             if (this.vadConfig?.enabled && this.vadFillerSuppressed) {
                 return;
             }
-            const buffer = this.buildSilenceFrame();
+            const buffer = buildSilenceFrame(this.silenceFrameBuffer, this.silenceFrameMs);
+            this.silenceFrameBuffer = buffer;
             const sent = this.client.sendAudio(buffer, {
                 filler: true,
                 captureTs: now,
@@ -638,32 +561,6 @@ class LiveStreamingSession extends EventEmitter {
             });
     }
 
-    analyzePcmChunk(buffer) {
-        if (!Buffer.isBuffer(buffer) || buffer.length < 2) {
-            return { rms: 0, peak: 0 };
-        }
-        let peak = 0;
-        let sumSquares = 0;
-        let samples = 0;
-        for (let i = 0; i < buffer.length - 1; i += 2) {
-            const sample = buffer.readInt16LE(i);
-            samples += 1;
-            const abs = Math.abs(sample);
-            peak = abs > peak ? abs : peak;
-            sumSquares += sample * sample;
-        }
-        const rms = Math.sqrt(sumSquares / Math.max(1, samples));
-        return { rms, peak };
-    }
-
-    computeChunkDurationMs(buffer) {
-        if (!Buffer.isBuffer(buffer) || buffer.length < 2) {
-            return 0;
-        }
-        const samples = Math.floor(buffer.length / 2);
-        return Math.max(1, Math.round((samples / 16000) * 1000));
-    }
-
     clearPendingFlushTimer() {
         if (this.pendingFlushTimer) {
             clearTimeout(this.pendingFlushTimer);
@@ -709,8 +606,8 @@ class LiveStreamingSession extends EventEmitter {
             return false;
         }
 
-        const stats = this.analyzePcmChunk(chunkToSend);
-        const chunkDurationMs = this.computeChunkDurationMs(chunkToSend);
+        const stats = analyzePcmChunk(chunkToSend);
+        const chunkDurationMs = computeChunkDurationMs(chunkToSend);
         const wasSilent = this.silenceDurationMs >= this.silenceNotifyMs;
         this.latestPcmStats = { ...stats, durationMs: chunkDurationMs };
         const rmsSpeech = stats.rms >= this.silenceEnergyThreshold;
@@ -791,148 +688,6 @@ class LiveStreamingSession extends EventEmitter {
     }
 }
 
-class StreamingTranscriptionService extends EventEmitter {
-    constructor(config = {}) {
-        super();
-        this.config = config;
-        this.ffmpegPath = config?.ffmpegPath || null;
-        this.sessions = new Map();
-        this.ready = false;
-    }
-
-    async init() {
-        const apiKey = this.config.providerConfig?.assembly?.apiKey;
-        if (!apiKey) {
-            throw new Error('ASSEMBLYAI_API_KEY must be configured.');
-        }
-        this.ready = true;
-        const cfgTs = this.config.streaming?.chunkTimesliceMs;
-        if (this.ffmpegPath) {
-            log('info', `Streaming transcription service initialized (AssemblyAI realtime) - chunkTimesliceMs=${cfgTs ?? 'unset'} ffmpeg=${this.ffmpegPath}`);
-        } else {
-            log('warn', `Streaming transcription service initialized without explicit FFmpeg path - chunkTimesliceMs=${cfgTs ?? 'unset'} (falling back to system PATH)`);
-        }
-    }
-
-    assertReady() {
-        if (!this.ready) {
-            throw new Error('Streaming transcription service is not initialized or disabled.');
-        }
-    }
-
-    createClient() {
-        if (this.config.streaming?.mock) {
-            return new MockStreamingClient();
-        }
-
-        return new AssemblyLiveClient({
-            apiKey: this.config.providerConfig?.assembly?.apiKey,
-            streamingParams: this.config.streaming?.assemblyParams || {}
-        });
-    }
-
-    async startSession(metadata = {}) {
-        this.assertReady();
-        const sessionId = metadata.sessionId || crypto.randomUUID();
-
-        if (this.sessions.has(sessionId)) {
-            throw new Error(`Session ${sessionId} already exists.`);
-        }
-
-        const client = this.createClient();
-        const session = new LiveStreamingSession({
-            sessionId,
-            sourceName: metadata.sourceName || 'unknown-source',
-            client,
-            streamingConfig: this.config.streaming || {},
-            ffmpegPath: metadata.ffmpegPath || this.ffmpegPath
-        });
-
-        session.on('update', (payload) => {
-            const deltaSize = typeof payload.delta === 'string' ? payload.delta.length : 0;
-            const latencyMs = typeof payload.latencyMs === 'number' ? payload.latencyMs : undefined;
-            const pipelineMs = typeof payload.pipelineMs === 'number' ? payload.pipelineMs : undefined;
-            log('info', `Session ${sessionId} update (${deltaSize} chars) ws:${latencyMs ?? '-'}ms e2e:${pipelineMs ?? '-'}ms`);
-            this.emit('session-update', {
-                sessionId,
-                sourceName: session.sourceName,
-                ...payload
-            });
-        });
-
-        session.on('error', (error) => {
-            log('error', `Session ${sessionId} error: ${error.message}`);
-            this.emit('session-error', {
-                sessionId,
-                error: {
-                    message: error?.message || 'Streaming transcription failed',
-                    name: error?.name || 'Error'
-                }
-            });
-        });
-
-        session.on('warning', (payload = {}) => {
-            log('warn', `Session ${sessionId} warning: ${payload.message || payload.code || 'unknown issue'}`);
-            this.emit('session-warning', {
-                sessionId,
-                sourceName: session.sourceName,
-                warning: payload
-            });
-        });
-
-        session.on('heartbeat', (payload = {}) => {
-            this.emit('session-heartbeat', {
-                sessionId,
-                sourceName: session.sourceName,
-                ...payload
-            });
-        });
-
-        this.sessions.set(sessionId, session);
-
-        // Start the Live API connection
-        try {
-            await session.start();
-            log('info', `Session ${sessionId} started for ${session.sourceName}`);
-            this.emit('session-started', { sessionId, sourceName: session.sourceName });
-        } catch (error) {
-            this.sessions.delete(sessionId);
-            throw error;
-        }
-
-        return sessionId;
-    }
-
-    pushChunk(sessionId, chunk) {
-        const session = this.sessions.get(sessionId);
-        if (!session) {
-            return false;
-        }
-        session.addChunk(chunk);
-        return true;
-    }
-
-    async stopSession(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) {
-            return;
-        }
-        await session.stop();
-        this.sessions.delete(sessionId);
-        log('info', `Session ${sessionId} stopped`);
-        this.emit('session-stopped', { sessionId });
-    }
-
-    async stopAllSessions() {
-        const pending = [];
-        for (const sessionId of this.sessions.keys()) {
-            pending.push(this.stopSession(sessionId));
-        }
-        await Promise.allSettled(pending);
-        this.sessions.clear();
-    }
-}
-
 module.exports = {
-    StreamingTranscriptionService
+    LiveStreamingSession
 };

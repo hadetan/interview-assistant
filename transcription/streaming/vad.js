@@ -8,14 +8,6 @@ const clamp = (value, min, max) => {
     return Math.min(max, Math.max(min, value));
 };
 
-const normalizeFrameMs = (frameMs = 30) => {
-    const parsed = Number.parseInt(frameMs, 10) || 30;
-    if (SUPPORTED_FRAME_MS.has(parsed)) {
-        return parsed;
-    }
-    return 30;
-};
-
 async function loadFvadModule() {
     if (!wasmModulePromise) {
         wasmModulePromise = import('@echogarden/fvad-wasm')
@@ -32,9 +24,9 @@ async function loadFvadModule() {
 class FvadInstance {
     constructor(module, options = {}) {
         this.module = module;
-        this.sampleRate = options.sampleRate || 16000;
-        this.frameMs = normalizeFrameMs(options.frameMs);
-        this.mode = clamp(Number.parseInt(options.aggressiveness, 10) || 2, 0, 3);
+        this.sampleRate = options.sampleRate;
+        this.frameMs = options.frameMs;
+        this.mode = options.aggressiveness;
         this.frameSamples = Math.floor(this.sampleRate * (this.frameMs / 1000));
         this.frameBytes = this.frameSamples * 2;
         this.pending = Buffer.alloc(0);
