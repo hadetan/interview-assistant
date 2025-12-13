@@ -82,6 +82,8 @@ class LiveStreamingSession extends EventEmitter {
         this.maxSilenceFailures = Math.max(1, Number(this.streamingConfig.silenceFailureThreshold) || 5);
         this.silenceBackoffMs = Math.max(1000, Number(this.streamingConfig.silenceBackoffMs) || 10000);
         this.pcmBuffer = Buffer.alloc(0);
+        this.pendingFlushTimer = null;
+        this.maxPendingChunkMs = Math.max(50, Number(this.streamingConfig.maxPendingChunkMs) || 150);
         this.firstChunkMeta = null;
         this.TARGET_CHUNK_SIZE = 3200; // Target chunk size: ~100ms of audio (16000Hz * 2 bytes * 0.1s = 3200 bytes)
         this.heartbeatInterval = null;
@@ -237,84 +239,9 @@ class LiveStreamingSession extends EventEmitter {
                         this.pcmBuffer = Buffer.concat([this.pcmBuffer, pcmChunk]);
 
                         if (this.pcmBuffer.length >= this.TARGET_CHUNK_SIZE) {
-                            const chunkToSend = this.pcmBuffer;
-                            const metaToSend = this.firstChunkMeta;
-
-                            this.pcmBuffer = Buffer.alloc(0);
-                            this.firstChunkMeta = null;
-
-                            const stats = this.analyzePcmChunk(chunkToSend);
-                            const chunkDurationMs = this.computeChunkDurationMs(chunkToSend);
-                            const wasSilent = this.silenceDurationMs >= this.silenceNotifyMs;
-                            this.latestPcmStats = { ...stats, durationMs: chunkDurationMs };
-                            const rmsSpeech = stats.rms >= this.silenceEnergyThreshold;
-
-                            let shouldSend = true;
-                            let treatAsSpeech = rmsSpeech;
-                            if (this.vadInstance && this.vadConfig.enabled) {
-                                const vadStats = this.evaluateVadDecision(chunkToSend, chunkDurationMs, rmsSpeech);
-                                this.latestVadStats = vadStats;
-                                shouldSend = vadStats.shouldSend;
-                                treatAsSpeech = vadStats.audioSpeech || vadStats.holdActive;
-                            } else {
-                                this.latestVadStats = null;
-                                this.vadFillerSuppressed = false;
-                                this.vadSilenceAccumMs = 0;
-                            }
-
-                            if (!treatAsSpeech) {
-                                this.silenceDurationMs = Math.min(this.silenceDurationMs + chunkDurationMs, 60_000);
-                                if (!wasSilent && this.silenceDurationMs >= this.silenceNotifyMs) {
-                                    this.emitHeartbeat('silence');
-                                }
-                            } else {
-                                this.silenceDurationMs = 0;
-                                this.lastSpeechAt = Date.now();
-                                if (wasSilent) {
-                                    this.emitHeartbeat('speech');
-                                }
-                            }
-
-                            if (!this.vadInstance && !treatAsSpeech && this.silenceDurationMs >= this.silenceSuppressMs) {
-                                if (Math.random() < 0.02) {
-                                    log('info', `Session ${this.id} suppressing ${chunkDurationMs}ms silent chunk (rms ${Math.round(stats.rms)})`);
-                                }
-                                return;
-                            }
-
-                            if (!shouldSend) {
-                                if (Math.random() < 0.02) {
-                                    log('info', `Session ${this.id} VAD suppressed ${chunkDurationMs}ms chunk (rms ${Math.round(stats.rms)})`);
-                                }
-                                return;
-                            }
-
-                            const conversionMs = (typeof metaToSend?.segmentProducedTs === 'number' && this.lastChunkReceivedAt)
-                                ? Math.max(0, metaToSend.segmentProducedTs - this.lastChunkReceivedAt)
-                                : undefined;
-
-                            if (typeof this.client.isReady === 'function' && !this.client.isReady()) {
-                                if (!this.reconnecting) {
-                                    this.scheduleReconnect();
-                                }
-                                return;
-                            }
-
-                            const sent = this.client.sendAudio(chunkToSend, metaToSend);
-                            if (!sent) {
-                                log('warn', `Session ${this.id} failed to enqueue PCM chunk (socket not ready)`);
-                                if (!this.reconnecting) {
-                                    this.scheduleReconnect();
-                                }
-                                return;
-                            }
-
-                            if (typeof conversionMs === 'number') {
-                                this.lastConversionMs = conversionMs;
-                                if (Math.random() < 0.05) {
-                                    log('info', `Session ${this.id} conversion latency ~${conversionMs}ms`);
-                                }
-                            }
+                            this.flushAccumulatedAudio();
+                        } else {
+                            this.schedulePendingFlush();
                         }
                     } catch (err) {
                         log('error', `Session ${this.id} failed to process audio: ${err.message}`);
@@ -404,16 +331,16 @@ class LiveStreamingSession extends EventEmitter {
         }
 
         this.teardownVad();
+        this.clearPendingFlushTimer();
 
         // Flush any remaining audio in the buffer
         if (this.pcmBuffer && this.pcmBuffer.length > 0) {
             try {
                 log('info', `Session ${this.id} flushing remaining ${this.pcmBuffer.length} bytes`);
-                this.client.sendAudio(this.pcmBuffer, this.firstChunkMeta);
+                this.flushAccumulatedAudio({ force: true, allowTerminated: true });
             } catch (err) {
                 log('warn', `Session ${this.id} failed to flush audio: ${err.message}`);
             }
-            this.pcmBuffer = Buffer.alloc(0);
         }
 
         this.stopSilenceFiller();
@@ -567,6 +494,9 @@ class LiveStreamingSession extends EventEmitter {
                 return;
             }
             if (typeof this.client.isReady === 'function' && !this.client.isReady()) {
+                return;
+            }
+            if (this.flushAccumulatedAudio({ force: true })) {
                 return;
             }
             const now = Date.now();
@@ -732,6 +662,132 @@ class LiveStreamingSession extends EventEmitter {
         }
         const samples = Math.floor(buffer.length / 2);
         return Math.max(1, Math.round((samples / 16000) * 1000));
+    }
+
+    clearPendingFlushTimer() {
+        if (this.pendingFlushTimer) {
+            clearTimeout(this.pendingFlushTimer);
+            this.pendingFlushTimer = null;
+        }
+    }
+
+    schedulePendingFlush() {
+        if (this.pendingFlushTimer || this.terminated) {
+            return;
+        }
+        if (!Number.isFinite(this.maxPendingChunkMs) || this.maxPendingChunkMs <= 0) {
+            return;
+        }
+        this.pendingFlushTimer = setTimeout(() => {
+            this.pendingFlushTimer = null;
+            if (this.terminated) {
+                return;
+            }
+            this.flushAccumulatedAudio({ force: true });
+        }, this.maxPendingChunkMs);
+    }
+
+    flushAccumulatedAudio(options = {}) {
+        const { force = false, allowTerminated = false } = options;
+        if (this.terminated && !allowTerminated) {
+            return false;
+        }
+        if (!this.pcmBuffer || this.pcmBuffer.length === 0) {
+            return false;
+        }
+        const chunkToSend = this.pcmBuffer;
+        const metaToSend = this.firstChunkMeta;
+        this.pcmBuffer = Buffer.alloc(0);
+        this.firstChunkMeta = null;
+        this.clearPendingFlushTimer();
+        return this.processReadyChunk(chunkToSend, metaToSend, { force });
+    }
+
+    processReadyChunk(chunkToSend, metaToSend, options = {}) {
+        const { force = false } = options;
+        if (!chunkToSend || chunkToSend.length === 0) {
+            return false;
+        }
+
+        const stats = this.analyzePcmChunk(chunkToSend);
+        const chunkDurationMs = this.computeChunkDurationMs(chunkToSend);
+        const wasSilent = this.silenceDurationMs >= this.silenceNotifyMs;
+        this.latestPcmStats = { ...stats, durationMs: chunkDurationMs };
+        const rmsSpeech = stats.rms >= this.silenceEnergyThreshold;
+
+        let shouldSend = true;
+        let treatAsSpeech = rmsSpeech;
+        if (this.vadInstance && this.vadConfig.enabled) {
+            const vadStats = this.evaluateVadDecision(chunkToSend, chunkDurationMs, rmsSpeech);
+            this.latestVadStats = vadStats;
+            shouldSend = vadStats.shouldSend;
+            treatAsSpeech = vadStats.audioSpeech || vadStats.holdActive;
+        } else {
+            this.latestVadStats = null;
+            this.vadFillerSuppressed = false;
+            this.vadSilenceAccumMs = 0;
+        }
+
+        if (force) {
+            shouldSend = true;
+            treatAsSpeech = treatAsSpeech || rmsSpeech;
+        }
+
+        if (!treatAsSpeech) {
+            this.silenceDurationMs = Math.min(this.silenceDurationMs + chunkDurationMs, 60_000);
+            if (!wasSilent && this.silenceDurationMs >= this.silenceNotifyMs) {
+                this.emitHeartbeat('silence');
+            }
+        } else {
+            this.silenceDurationMs = 0;
+            this.lastSpeechAt = Date.now();
+            if (wasSilent) {
+                this.emitHeartbeat('speech');
+            }
+        }
+
+        if (!this.vadInstance && !treatAsSpeech && this.silenceDurationMs >= this.silenceSuppressMs && !force) {
+            if (Math.random() < 0.02) {
+                log('info', `Session ${this.id} suppressing ${chunkDurationMs}ms silent chunk (rms ${Math.round(stats.rms)})`);
+            }
+            return false;
+        }
+
+        if (!shouldSend && !force) {
+            if (Math.random() < 0.02) {
+                log('info', `Session ${this.id} VAD suppressed ${chunkDurationMs}ms chunk (rms ${Math.round(stats.rms)})`);
+            }
+            return false;
+        }
+
+        const conversionMs = (typeof metaToSend?.segmentProducedTs === 'number' && this.lastChunkReceivedAt)
+            ? Math.max(0, metaToSend.segmentProducedTs - this.lastChunkReceivedAt)
+            : undefined;
+
+        if (typeof this.client.isReady === 'function' && !this.client.isReady()) {
+            if (!this.reconnecting) {
+                this.scheduleReconnect();
+            }
+            return false;
+        }
+
+        const sent = this.client.sendAudio(chunkToSend, metaToSend);
+        if (!sent) {
+            log('warn', `Session ${this.id} failed to enqueue PCM chunk (socket not ready)`);
+            if (!this.reconnecting) {
+                this.scheduleReconnect();
+            }
+            return false;
+        }
+
+        if (typeof conversionMs === 'number') {
+            this.lastConversionMs = conversionMs;
+            if (Math.random() < 0.05) {
+                log('info', `Session ${this.id} conversion latency ~${conversionMs}ms`);
+            }
+        }
+
+        return true;
     }
 }
 
