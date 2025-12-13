@@ -3,7 +3,7 @@
 No description yet;
 
 ### Status
-*Currently this is fully supported on windows only*
+*Currently this is fully supported on windows OS only*
 
 ## Prerequisites
 - Node.js 18+ (tested with v22.20.0) and npm 9+.
@@ -23,6 +23,4 @@ npm run dev
 - `CTRL + SHIFT + [up/down]` arrow: Scroll up or down on conversation
 - `CTRL + ALT + G`: Clear conversation
 - `CTRL + [up/down/left/right]` arrow: Position top/bottom/left/right the windows
-
-## Controls unsupported
-- `CTRL + B`: Hide or show windows
+- `CTRL + SHIFT + ALT + B`: Hide or show windows

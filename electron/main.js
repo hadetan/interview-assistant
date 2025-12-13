@@ -466,6 +466,55 @@ app.whenReady().then(() => {
     const moveDown = 'CommandOrControl+Down';
     registerShortcut(moveDown, () => moveOverlaysBy(0, MOVE_STEP_PX));
 
+    const visibilityToggleShortcut = 'CommandOrControl+Shift+Alt+B';
+    registerShortcut(visibilityToggleShortcut, () => {
+        const targets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
+
+        if (!targets.length) {
+            if (!controlWindow || controlWindow.isDestroyed()) {
+                createControlWindow();
+            }
+            if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+                createTranscriptWindow();
+            }
+        }
+
+        const liveTargets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
+        if (!liveTargets.length) {
+            return;
+        }
+
+        const anyVisible = liveTargets.some((win) => typeof win.isVisible === 'function' && win.isVisible());
+
+        if (anyVisible) {
+            liveTargets.forEach((win) => {
+                try {
+                    win.hide();
+                } catch (err) {
+                    console.warn('[Shortcut] Failed to hide window', err);
+                }
+            });
+            return;
+        }
+
+        liveTargets.forEach((win) => {
+            try {
+                if (stealthModeEnabled && typeof win.showInactive === 'function') {
+                    win.showInactive();
+                } else {
+                    win.show();
+                    if (win === controlWindow && !stealthModeEnabled) {
+                        win.focus();
+                    }
+                }
+            } catch (err) {
+                console.warn('[Shortcut] Failed to show window', err);
+            }
+        });
+
+        positionOverlayWindows();
+    });
+
     screen.on('display-metrics-changed', positionOverlayWindows);
     screen.on('display-added', positionOverlayWindows);
     screen.on('display-removed', positionOverlayWindows);
