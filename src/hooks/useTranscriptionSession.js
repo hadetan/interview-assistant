@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { mergeText } from '../utils/mergeText';
+import { initialTranscriptText, resolveTranscriptText } from '../utils/transcriptText';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const STALL_THRESHOLD_MS = 1500;
@@ -165,7 +165,8 @@ export function useTranscriptionSession({ isControlWindow }) {
                     const serverText = typeof payload.text === 'string' ? payload.text : '';
                     const delta = typeof payload.delta === 'string' ? payload.delta : '';
                     const isFinal = Boolean(payload.isFinal);
-                    const content = delta || serverText;
+                    const hasDelta = delta.length > 0;
+                    const hasServerText = serverText.length > 0;
                     const now = Date.now();
                     const lastUpdateTs = lastMessageUpdateTsRef.current || 0;
                     const canContinue = lastUpdateTs > 0 && (now - lastUpdateTs) <= CONTINUATION_LINGER_MS;
@@ -173,7 +174,8 @@ export function useTranscriptionSession({ isControlWindow }) {
                     if (!canContinue) {
                         continuationMessageIdRef.current = null;
                     }
-                    if (content) {
+                    if (hasDelta || hasServerText) {
+                        const textContext = { delta, serverText };
                         setMessages((prev) => {
                             const next = [...prev];
                             const pendingId = pendingMessageIdRef.current;
@@ -183,8 +185,8 @@ export function useTranscriptionSession({ isControlWindow }) {
                                 if (targetId) {
                                     const updated = next.map((msg) => {
                                         if (msg.id !== targetId) return msg;
-                                        const appended = mergeText(msg.text, delta ? delta : serverText || content, Boolean(delta));
-                                        return { ...msg, text: appended, isFinal: false };
+                                        const updatedText = resolveTranscriptText(msg.text, textContext);
+                                        return { ...msg, text: updatedText, isFinal: false };
                                     });
                                     pendingMessageIdRef.current = targetId;
                                     continuationMessageIdRef.current = targetId;
@@ -195,7 +197,10 @@ export function useTranscriptionSession({ isControlWindow }) {
                                 pendingMessageIdRef.current = id;
                                 continuationMessageIdRef.current = id;
                                 lastMessageUpdateTsRef.current = now;
-                                next.push({ id, text: content, isFinal: false, ts: now, side: 'left' });
+                                const initialText = initialTranscriptText(textContext);
+                                if (initialText) {
+                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left' });
+                                }
                                 return next;
                             }
 
@@ -205,9 +210,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                                 lastMessageUpdateTsRef.current = now;
                                 return next.map((msg) => {
                                     if (msg.id !== targetId) return msg;
-                                    const finalizedText = serverText
-                                        ? serverText
-                                        : mergeText(msg.text, delta ? delta : content, Boolean(delta));
+                                    const finalizedText = resolveTranscriptText(msg.text, textContext);
                                     return { ...msg, text: finalizedText, isFinal: true };
                                 });
                             }
@@ -216,7 +219,10 @@ export function useTranscriptionSession({ isControlWindow }) {
                             pendingMessageIdRef.current = null;
                             continuationMessageIdRef.current = id;
                             lastMessageUpdateTsRef.current = now;
-                            next.push({ id, text: serverText || content, isFinal: true, ts: now, side: 'left' });
+                            const initialText = initialTranscriptText(textContext);
+                            if (initialText) {
+                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left' });
+                            }
                             return next;
                         });
                     }

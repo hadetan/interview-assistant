@@ -59,15 +59,19 @@ const buildAudioConstraints = (sourceId) => {
     };
 };
 
-const mergeText = (base, incoming) => {
+const mergeText = (base, incoming, preferAppend = false) => {
     const safeBase = base || '';
     const safeIncoming = incoming || '';
     if (!safeIncoming) return safeBase;
     if (!safeBase) return safeIncoming;
     if (safeIncoming === safeBase) return safeBase;
 
-    const baseTrimRight = safeBase.replace(/\s+$/g, '');
-    const incomingTrimLeft = safeIncoming.replace(/^\s+/g, '');
+    const baseTrimRight = preferAppend
+        ? safeBase
+        : safeBase.replace(/\s+$/g, '');
+    const incomingTrimLeft = preferAppend
+        ? safeIncoming
+        : safeIncoming.replace(/^\s+/g, '');
 
     if (incomingTrimLeft.startsWith(baseTrimRight)) return incomingTrimLeft;
     if (baseTrimRight.endsWith(incomingTrimLeft)) return baseTrimRight;
@@ -179,7 +183,11 @@ const upsertBubble = ({ text, isFinal, side = 'left', append = false }) => {
         if (targetId) {
             const node = transcriptOutput.querySelector(`[data-message-id=\"${targetId}\"]`);
             if (node) {
-                node.textContent = mergeText(node.textContent, safeText, append);
+                if (append && safeText) {
+                    node.textContent = mergeText(node.textContent, safeText, append);
+                } else if (safeText) {
+                    node.textContent = safeText;
+                }
             }
             pendingBubbleId = targetId;
             continuationBubbleId = targetId;
@@ -201,8 +209,12 @@ const upsertBubble = ({ text, isFinal, side = 'left', append = false }) => {
         continuationBubbleId = targetId;
         lastBubbleUpdateTs = now;
         if (node) {
-            const mergedText = safeText || mergeText(node.textContent, safeText, append);
-            node.textContent = mergedText || node.textContent;
+            if (append && safeText) {
+                const mergedText = mergeText(node.textContent, safeText, append);
+                node.textContent = mergedText || node.textContent;
+            } else if (safeText) {
+                node.textContent = safeText;
+            }
             node.dataset.final = 'true';
             transcriptOutput.scrollTop = transcriptOutput.scrollHeight;
             return;

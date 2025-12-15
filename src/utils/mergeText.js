@@ -22,8 +22,12 @@ export function mergeText(base, incoming, preferAppend = false) {
         return safeBase;
     }
 
-    const baseTrimRight = safeBase.replace(TRAILING_WHITESPACE, '');
-    const incomingTrimLeft = safeIncoming.replace(LEADING_WHITESPACE, '');
+    const baseTrimRight = preferAppend
+        ? safeBase
+        : safeBase.replace(TRAILING_WHITESPACE, '');
+    const incomingTrimLeft = preferAppend
+        ? safeIncoming
+        : safeIncoming.replace(LEADING_WHITESPACE, '');
 
     if (incomingTrimLeft.startsWith(baseTrimRight)) {
         return incomingTrimLeft;

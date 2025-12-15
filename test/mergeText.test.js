@@ -22,3 +22,15 @@ test('mergeText keeps punctuation tight', () => {
 test('mergeText preserves base when it already ends with incoming', () => {
     assert.equal(mergeText('hello world', 'world'), 'hello world');
 });
+
+test('mergeText keeps earlier words when incoming only has tail', () => {
+    const base = 'The quick brown fox jumps';
+    const incoming = 'fox jumps over the lazy dog';
+    assert.equal(mergeText(base, incoming), 'The quick brown fox jumps over the lazy dog');
+});
+
+test('mergeText preserves whitespace-only deltas when appending', () => {
+    const withSpace = mergeText('what', ' ', true);
+    assert.equal(withSpace, 'what ');
+    assert.equal(mergeText(withSpace, 'the', true), 'what the');
+});
