@@ -12,6 +12,10 @@ No description yet;
 - **Windows**: Windows 10/11 with desktop capture permissions enabled.
 
 ## Quick Start (Development)
+
+For Environment Variables please refer to the [env example](./.env.example).
+
+Start the app:
 ```bash
 cd /home/asus/ws/poc-screen-and-audio-capture
 npm install

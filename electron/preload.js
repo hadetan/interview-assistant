@@ -76,6 +76,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
             const listener = () => callback();
             ipcRenderer.on('control-window:clear-transcript', listener);
             return () => ipcRenderer.removeListener('control-window:clear-transcript', listener);
+        },
+        onAssistantSend: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = () => callback();
+            ipcRenderer.on('control-window:assistant-send', listener);
+            return () => ipcRenderer.removeListener('control-window:assistant-send', listener);
         }
     },
     transcription: {
@@ -98,6 +106,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
             const listener = (_event, payload) => callback(payload);
             ipcRenderer.on('transcription:stream', listener);
             return () => ipcRenderer.removeListener('transcription:stream', listener);
+        }
+    },
+    assistant: {
+        sendMessage: (payload) => ipcRenderer.invoke('assistant:send', payload),
+        stop: (sessionId) => {
+            if (!sessionId) {
+                return Promise.resolve({ ok: false });
+            }
+            return ipcRenderer.invoke('assistant:stop', { sessionId });
+        },
+        onEvent: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = (_event, payload) => callback(payload);
+            ipcRenderer.on('assistant:stream', listener);
+            return () => ipcRenderer.removeListener('assistant:stream', listener);
         }
     },
     overlay: {

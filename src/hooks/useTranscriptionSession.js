@@ -22,12 +22,23 @@ export function useTranscriptionSession({ isControlWindow }) {
     const latencyLabelRef = useRef('');
     const latencySuffixRef = useRef('');
     const latencySuffixReasonRef = useRef('');
+    const assistantListenerRef = useRef(null);
+    const assistantSessionIdRef = useRef(null);
+    const assistantRequestInFlightRef = useRef(false);
+    const messagesRef = useRef([]);
 
     const resetTranscriptionListener = useCallback(() => {
         if (typeof stopTranscriptionListenerRef.current === 'function') {
             stopTranscriptionListenerRef.current();
         }
         stopTranscriptionListenerRef.current = null;
+    }, []);
+
+    const resetAssistantListener = useCallback(() => {
+        if (typeof assistantListenerRef.current === 'function') {
+            assistantListenerRef.current();
+        }
+        assistantListenerRef.current = null;
     }, []);
 
     const formatStalledLabel = useCallback((durationMs) => {
@@ -84,6 +95,8 @@ export function useTranscriptionSession({ isControlWindow }) {
         continuationMessageIdRef.current = null;
         lastMessageUpdateTsRef.current = 0;
         setMessages([]);
+        assistantSessionIdRef.current = null;
+        assistantRequestInFlightRef.current = false;
     }, []);
 
     const teardownSession = useCallback(async () => {
@@ -199,7 +212,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                                 lastMessageUpdateTsRef.current = now;
                                 const initialText = initialTranscriptText(textContext);
                                 if (initialText) {
-                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left' });
+                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left', sent: false });
                                 }
                                 return next;
                             }
@@ -221,7 +234,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                             lastMessageUpdateTsRef.current = now;
                             const initialText = initialTranscriptText(textContext);
                             if (initialText) {
-                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left' });
+                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left', sent: false });
                             }
                             return next;
                         });
@@ -293,7 +306,179 @@ export function useTranscriptionSession({ isControlWindow }) {
     useEffect(() => () => {
         resetTranscriptionListener();
         resetLatencyWatchdog();
-    }, [resetLatencyWatchdog, resetTranscriptionListener]);
+        resetAssistantListener();
+    }, [resetAssistantListener, resetLatencyWatchdog, resetTranscriptionListener]);
+
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
+
+    const appendAssistantNotice = useCallback((text) => {
+        if (!text) {
+            return;
+        }
+        setMessages((prev) => ([
+            ...prev,
+            {
+                id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                text,
+                isFinal: true,
+                ts: Date.now(),
+                side: 'right'
+            }
+        ]));
+    }, []);
+
+    const updateAssistantMessage = useCallback((payload = {}) => {
+        const { messageId } = payload;
+        if (!messageId) {
+            return;
+        }
+        const delta = typeof payload.delta === 'string' ? payload.delta : '';
+        const serverText = typeof payload.text === 'string' ? payload.text : undefined;
+        const isFinal = Boolean(payload.isFinal);
+        setMessages((prev) => {
+            let matched = false;
+            const next = prev.map((msg) => {
+                if (msg.id !== messageId) {
+                    return msg;
+                }
+                matched = true;
+                const base = msg.text === 'Thinking...' ? '' : (msg.text || '');
+                const updatedText = serverText !== undefined ? serverText : `${base}${delta}`;
+                return { ...msg, text: updatedText, isFinal };
+            });
+            if (!matched && (serverText || delta)) {
+                next.push({
+                    id: messageId,
+                    text: serverText || delta,
+                    isFinal,
+                    ts: Date.now(),
+                    side: 'right'
+                });
+            }
+            return next;
+        });
+    }, []);
+
+    const handleAssistantError = useCallback((payload = {}) => {
+        const messageId = payload.messageId;
+        const message = payload?.error?.message || payload.message || 'Assistant error';
+        const finalText = `Assistant error: ${message}`;
+        setMessages((prev) => {
+            let updated = false;
+            const next = prev.map((msg) => {
+                if (messageId && msg.id === messageId) {
+                    updated = true;
+                    return { ...msg, text: finalText, isFinal: true };
+                }
+                return msg;
+            });
+            if (!updated) {
+                next.push({
+                    id: messageId || `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    text: finalText,
+                    isFinal: true,
+                    ts: Date.now(),
+                    side: 'right'
+                });
+            }
+            return next;
+        });
+    }, []);
+
+    const attachAssistantEvents = useCallback(() => {
+        if (typeof electronAPI?.assistant?.onEvent !== 'function') {
+            return;
+        }
+        resetAssistantListener();
+        assistantListenerRef.current = electronAPI.assistant.onEvent((payload = {}) => {
+            const { type, sessionId } = payload;
+            if (!type) {
+                return;
+            }
+            if (sessionId && assistantSessionIdRef.current && sessionId !== assistantSessionIdRef.current && type !== 'stopped') {
+                return;
+            }
+            switch (type) {
+                case 'started':
+                    assistantSessionIdRef.current = sessionId || assistantSessionIdRef.current;
+                    break;
+                case 'update':
+                    updateAssistantMessage(payload);
+                    if (payload.isFinal) {
+                        assistantSessionIdRef.current = null;
+                    }
+                    break;
+                case 'error':
+                    handleAssistantError(payload);
+                    assistantSessionIdRef.current = null;
+                    break;
+                case 'stopped':
+                    assistantSessionIdRef.current = null;
+                    break;
+                default:
+                    break;
+            }
+        });
+    }, [handleAssistantError, resetAssistantListener, updateAssistantMessage]);
+
+    const requestAssistantResponse = useCallback(async () => {
+        if (assistantRequestInFlightRef.current) {
+            return { ok: false, reason: 'busy' };
+        }
+        const available = (messagesRef.current || []).filter((msg) => msg.side === 'left' && msg.sent !== true && typeof msg.text === 'string' && msg.text.trim().length > 0);
+        if (available.length === 0) {
+            appendAssistantNotice('no new message available to send');
+            return { ok: false, reason: 'no-unsent' };
+        }
+
+        const prompt = available.map((msg) => msg.text.trim()).filter(Boolean).join(' ');
+        if (!prompt) {
+            appendAssistantNotice('no new message available to send');
+            return { ok: false, reason: 'no-unsent' };
+        }
+
+        assistantRequestInFlightRef.current = true;
+        try {
+            if (typeof electronAPI?.assistant?.sendMessage !== 'function') {
+                throw new Error('Assistant API is unavailable.');
+            }
+            const response = await electronAPI.assistant.sendMessage({ text: prompt });
+            const { sessionId, messageId } = response || {};
+            if (!sessionId || !messageId) {
+                throw new Error('Assistant response is missing identifiers.');
+            }
+            assistantSessionIdRef.current = sessionId;
+            const now = Date.now();
+            const sentIds = new Set(available.map((msg) => msg.id));
+            setMessages((prev) => {
+                const updated = prev.map((msg) => {
+                    if (sentIds.has(msg.id)) {
+                        return { ...msg, sent: true };
+                    }
+                    return msg;
+                });
+                return [
+                    ...updated,
+                    {
+                        id: messageId,
+                        text: 'Thinking...',
+                        isFinal: false,
+                        ts: now,
+                        side: 'right',
+                        assistantSessionId: sessionId
+                    }
+                ];
+            });
+            return { ok: true, sessionId, messageId };
+        } catch (error) {
+            appendAssistantNotice(`Assistant error: ${error?.message || 'Unknown error'}`);
+            return { ok: false, error };
+        } finally {
+            assistantRequestInFlightRef.current = false;
+        }
+    }, [appendAssistantNotice]);
 
     return useMemo(() => ({
         status,
@@ -306,13 +491,17 @@ export function useTranscriptionSession({ isControlWindow }) {
         stopTranscriptionSession,
         teardownSession,
         attachTranscriptionEvents,
+        attachAssistantEvents,
+        requestAssistantResponse,
         getSessionId
     }), [
+        attachAssistantEvents,
         attachTranscriptionEvents,
         clearTranscript,
         getSessionId,
         isStreaming,
         latencyStatus,
+        requestAssistantResponse,
         messages,
         startTranscriptionSession,
         status,

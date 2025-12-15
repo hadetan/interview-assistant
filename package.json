@@ -22,6 +22,7 @@
       "electron/**",
       "dist/renderer/**",
       "config/**",
+      "assistant/**",
       "transcription/**",
       "utils/**",
       "tools/**",
