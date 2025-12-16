@@ -459,6 +459,10 @@ export function useTranscriptionSession({ isControlWindow }) {
                     }
                     return msg;
                 });
+                const alreadyHasMessage = updated.some((msg) => msg.id === messageId);
+                if (alreadyHasMessage) {
+                    return updated;
+                }
                 return [
                     ...updated,
                     {

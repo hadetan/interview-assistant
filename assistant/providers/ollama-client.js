@@ -5,6 +5,10 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_MODEL = 'qwen2.5-coder:1.5b';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const WHITESPACE_REGEX = /\s/;
+const BOUNDARY_CHARS = new Set(['.', ',', ';', ':', '!', '?', ')', '(', '[', ']', '{', '}', '<', '>', '/', '\\', '+', '-', '*', '=', '"', '\'', '`']);
+
+const isBoundaryChar = (char) => WHITESPACE_REGEX.test(char) || BOUNDARY_CHARS.has(char);
 
 class OllamaClient extends EventEmitter {
     constructor(options = {}) {
@@ -22,6 +26,7 @@ class OllamaClient extends EventEmitter {
         this.timeoutId = null;
         this.connectTimeoutId = null;
         this.accumulatedText = '';
+        this.pendingSegment = '';
     }
 
     async startStream({ prompt, model } = {}) {
@@ -40,6 +45,7 @@ class OllamaClient extends EventEmitter {
         }
 
         this.accumulatedText = '';
+        this.pendingSegment = '';
         this.abortController = new AbortController();
 
         const payload = {
@@ -140,6 +146,7 @@ class OllamaClient extends EventEmitter {
         this.streamPromise = null;
         this.abortController = null;
         this.accumulatedText = '';
+        this.pendingSegment = '';
     }
 
     async safeReadBody(response) {
@@ -177,6 +184,13 @@ class OllamaClient extends EventEmitter {
         const finalResult = this.processBuffer(buffer + trailing, true);
         finalEmitted = finalEmitted || finalResult.finalEmitted;
         if (!finalEmitted) {
+            const trailingDelta = this.appendWithSpacing('', { flush: true });
+            if (trailingDelta) {
+                this.emit('partial', {
+                    delta: trailingDelta,
+                    text: this.accumulatedText
+                });
+            }
             this.emit('final', {
                 text: this.accumulatedText,
                 stopReason: 'completed'
@@ -222,11 +236,21 @@ class OllamaClient extends EventEmitter {
             return false;
         }
 
+        const shouldFlush = Boolean(payload.done);
+
         if (typeof payload.response === 'string' && payload.response.length > 0) {
-            const delta = this.appendWithSpacing(payload.response);
+            const delta = this.appendWithSpacing(payload.response, { flush: shouldFlush });
             if (delta) {
                 this.emit('partial', {
                     delta,
+                    text: this.accumulatedText
+                });
+            }
+        } else if (shouldFlush) {
+            const trailingDelta = this.appendWithSpacing('', { flush: true });
+            if (trailingDelta) {
+                this.emit('partial', {
+                    delta: trailingDelta,
                     text: this.accumulatedText
                 });
             }
@@ -244,23 +268,33 @@ class OllamaClient extends EventEmitter {
         return false;
     }
 
-    appendWithSpacing(chunk) {
-        const raw = chunk;
-        if (!raw) {
+    appendWithSpacing(chunk, options = {}) {
+        const flush = Boolean(options.flush);
+        const raw = typeof chunk === 'string' ? chunk : '';
+        if (raw) {
+            this.pendingSegment += raw;
+        }
+        if (!this.pendingSegment) {
             return '';
         }
-        const previous = this.accumulatedText || '';
-        let normalized = raw;
-        const needsLeadingSpace = Boolean(previous)
-            && !/\s$/.test(previous)
-            && !/^\s/.test(raw);
-        if (needsLeadingSpace) {
-            normalized = ` ${raw}`;
-        } else if (!previous) {
-            normalized = raw.replace(/^\s+/, '');
+        const flushLength = flush ? this.pendingSegment.length : this.findFlushLength(this.pendingSegment);
+        if (flushLength <= 0) {
+            return '';
         }
-        this.accumulatedText = `${previous}${normalized}`;
-        return normalized;
+        const delta = this.pendingSegment.slice(0, flushLength);
+        this.pendingSegment = this.pendingSegment.slice(flushLength);
+        this.accumulatedText = `${this.accumulatedText}${delta}`;
+        return delta;
+    }
+
+    findFlushLength(buffer) {
+        let lastBoundary = -1;
+        for (let index = 0; index < buffer.length; index += 1) {
+            if (isBoundaryChar(buffer[index])) {
+                lastBoundary = index + 1;
+            }
+        }
+        return lastBoundary;
     }
 }
 
