@@ -169,6 +169,7 @@ const initializeApp = async () => {
     });
 
     const assistantEnabled = assistantConfig?.isEnabled !== false;
+    let attachImageShortcut = null;
 
     if (assistantEnabled) {
         const assistantShortcut = 'CommandOrControl+Shift+Alt+Enter';
@@ -179,7 +180,7 @@ const initializeApp = async () => {
             }
         });
 
-        const attachImageShortcut = 'CommandOrControl+Alt+H';
+        attachImageShortcut = 'CommandOrControl+Alt+H';
         shortcutManager.registerShortcut(attachImageShortcut, async () => {
             const transcriptWindow = getTranscriptWindow();
             if (!transcriptWindow || transcriptWindow.isDestroyed()) {
@@ -245,7 +246,7 @@ const initializeApp = async () => {
                 }
             });
 
-            shortcutManager.unregisterAllShortcutsExcept(new Set([visibilityToggleShortcut]));
+            shortcutManager.unregisterAllShortcutsExcept(new Set([visibilityToggleShortcut, attachImageShortcut]));
             return;
         }
 

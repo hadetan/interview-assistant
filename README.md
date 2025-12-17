@@ -35,3 +35,4 @@ npm run dev
 - Validation on generated code.
     - Node vm.script(code)
     - python -m py_compile
+- Image > OCR > AI
