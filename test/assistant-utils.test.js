@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const assistantModulePromise = import('../src/utils/assistantMessage.js');
 const attachmentModulePromise = import('../src/utils/attachmentPreview.js');
-const { AssistantService } = require('../assistant/assistant-service');
+const { AssistantService } = require('../ai/assistant/assistant-service');
 
 test('mergeAssistantText keeps placeholder until content arrives', async () => {
     const { mergeAssistantText } = await assistantModulePromise;

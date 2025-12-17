@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 
-const { StreamingTranscriptionService } = require('../transcription/streaming/streaming-service');
+const { StreamingTranscriptionService } = require('../ai/transcription/streaming/streaming-service');
 
 test('StreamingTranscriptionService starts session, receives update, and stops', async () => {
     const service = new StreamingTranscriptionService({

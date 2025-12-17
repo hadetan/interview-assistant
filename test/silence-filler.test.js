@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSilenceFrame } = require('../transcription/streaming/silence-filler');
+const { buildSilenceFrame } = require('../ai/transcription/streaming/silence-filler');
 
 test('buildSilenceFrame creates zeroed buffer of correct length', () => {
     const buf = buildSilenceFrame(null, 100); // 100ms at 16k mono -> 1600 samples -> 3200 bytes

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 
-const { MockStreamingClient } = require('../transcription/streaming/mock-client');
+const { MockStreamingClient } = require('../ai/transcription/streaming/mock-client');
 
 test('MockStreamingClient connects, sends, and emits transcription periodically', async () => {
     const client = new MockStreamingClient();

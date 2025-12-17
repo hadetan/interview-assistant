@@ -2,8 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 
-const { LiveStreamingSession } = require('../transcription/streaming/live-session');
-const { MockStreamingClient } = require('../transcription/streaming/mock-client');
+const { LiveStreamingSession } = require('../ai/transcription/streaming/live-session');
+const { MockStreamingClient } = require('../ai/transcription/streaming/mock-client');
 
 const makeFakeConverterFactory = () => {
     let started = false;
