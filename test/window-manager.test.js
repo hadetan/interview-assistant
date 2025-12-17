@@ -10,8 +10,12 @@ class FakeBrowserWindow {
         this.id = FakeBrowserWindow.nextId++;
         this.opts = opts;
         this._bounds = { x: 0, y: 0, width: opts.width || 100, height: opts.height || 50 };
+        this._contentSize = [this._bounds.width, this._bounds.height];
         this._events = new Map();
-        this.webContents = { send: () => {} };
+        this.webContents = {
+            send: () => {},
+            on: () => {}
+        };
     }
 
     loadFile() {}
@@ -25,6 +29,12 @@ class FakeBrowserWindow {
     hide() { this.visible = false; }
     focus() {}
     setPosition(x, y) { this._bounds.x = x; this._bounds.y = y; }
+    setContentSize(width, height) {
+        this._contentSize = [width, height];
+        this._bounds.width = width;
+        this._bounds.height = height;
+    }
+    getContentSize() { return [...this._contentSize]; }
     getBounds() { return { ...this._bounds }; }
     on(name, handler) { this._events.set(name, handler); }
     once(name, handler) { this._events.set(name, handler); }
