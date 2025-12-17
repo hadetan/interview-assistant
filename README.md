@@ -36,3 +36,6 @@ npm run dev
     - Node vm.script(code)
     - python -m py_compile
 - Image > OCR > AI
+
+## Can be added
+- Google vision for accurate OCR.
