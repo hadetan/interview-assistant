@@ -70,11 +70,16 @@ body {
 }
 
 .transcript-shell {
-    display: contents;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
 }
 
 .transcript-panel {
+    display: flex;
+    flex-direction: column;
     width: 100%;
+    max-height: 100vh;
     border-radius: 24px;
     padding: 1.2rem 1.4rem 1rem;
     background: rgba(3, 7, 18, 0.28);
@@ -122,9 +127,9 @@ body {
 }
 
 .transcript-body {
-    min-height: 200px;
-    max-height: 70vh;
-    overflow-y: scroll;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 0.98rem;
@@ -163,6 +168,7 @@ body {
     padding: 0.65rem 0.9rem;
     border-radius: 14px;
     word-break: break-word;
+    white-space: pre-wrap;
     background: rgba(255, 255, 255, 0.04);
     color: #f8fafc;
     border: 1px solid rgba(148, 163, 184, 0.35);
@@ -175,9 +181,69 @@ body {
 
 .chat-bubble.right {
     align-self: flex-end;
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.9), rgba(14, 165, 233, 0.9));
-    color: #041627;
-    border-color: rgba(34, 211, 238, 0.75);
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.1), rgba(14, 165, 233, 0.1));
+    color: #f8fafc;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.chat-bubble-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.chat-bubble-attachment {
+    width: 120px;
+    height: auto;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    object-fit: cover;
+    background: rgba(15, 23, 42, 0.4);
+}
+
+.chat-bubble-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.chat-bubble-text {
+    white-space: pre-wrap;
+}
+
+.code-snippet {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(51, 65, 85, 0.8);
+    border-radius: 12px;
+    padding: 0.55rem 0.65rem;
+    overflow: hidden;
+}
+
+.code-snippet pre {
+    margin: 0;
+    padding: 0;
+    overflow-x: auto;
+}
+
+.code-snippet pre code {
+    font-size: 0.85rem;
+}
+
+.code-snippet-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.9);
+}
+
+.code-snippet-error {
+    color: #fca5a5;
+    font-size: 0.85rem;
+    font-weight: 600;
 }
 
 .chat-placeholder {

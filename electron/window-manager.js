@@ -1,6 +1,10 @@
 const path = require('node:path');
 const fs = require('node:fs');
 
+const DEFAULT_TRANSCRIPT_WIDTH = 1080;
+const FALLBACK_TRANSCRIPT_HEIGHT = 520;
+const MIN_TRANSCRIPT_HEIGHT = 320;
+
 const clampOverlaysWithinArea = (targets, workArea) => {
     const rects = targets.filter(Boolean);
     if (!rects.length || !workArea?.width || !workArea?.height) {
@@ -90,6 +94,75 @@ const createWindowManager = ({
 
     let controlWindow = null;
     let transcriptWindow = null;
+    let lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
+
+    const getControlBounds = () => (controlWindow && !controlWindow.isDestroyed() ? controlWindow.getBounds() : null);
+    const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
+
+    const getTranscriptContentWidth = () => {
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+            return DEFAULT_TRANSCRIPT_WIDTH;
+        }
+        try {
+            const [contentWidth] = transcriptWindow.getContentSize();
+            if (Number.isFinite(contentWidth) && contentWidth > 0) {
+                return contentWidth;
+            }
+        } catch (_err) {
+            // ignore content size access failures while the window initializes
+        }
+        const bounds = getTranscriptBounds();
+        return bounds?.width || DEFAULT_TRANSCRIPT_WIDTH;
+    };
+
+    const resolveTranscriptHeightBounds = () => {
+        const controlBounds = getControlBounds();
+        const anchorBounds = getTranscriptBounds() || controlBounds;
+        const workArea = resolveWorkArea(screen, anchorBounds);
+        const bottomMargin = windowTopMargin;
+        const reservedTop = windowTopMargin + (controlBounds ? controlBounds.height + windowVerticalGap : 0);
+        const rawAvailable = (workArea?.height ?? 0) - reservedTop - bottomMargin;
+
+        if (rawAvailable <= 0) {
+            return {
+                minHeight: MIN_TRANSCRIPT_HEIGHT,
+                maxHeight: Math.max(MIN_TRANSCRIPT_HEIGHT, FALLBACK_TRANSCRIPT_HEIGHT)
+            };
+        }
+
+        const minHeight = Math.min(MIN_TRANSCRIPT_HEIGHT, rawAvailable);
+        return {
+            minHeight,
+            maxHeight: Math.max(minHeight, rawAvailable)
+        };
+    };
+
+    const resizeTranscriptWindow = (nextHeight) => {
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+            return false;
+        }
+        const normalizedHeight = Math.max(1, Math.round(nextHeight));
+        if (normalizedHeight === lastAppliedTranscriptHeight) {
+            return false;
+        }
+        const targetWidth = getTranscriptContentWidth();
+        lastAppliedTranscriptHeight = normalizedHeight;
+        transcriptWindow.setContentSize(targetWidth, normalizedHeight);
+        return true;
+    };
+
+    const clampTranscriptHeightWithinWorkArea = () => {
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+            return;
+        }
+        const bounds = getTranscriptBounds();
+        const currentHeight = bounds?.height ?? lastAppliedTranscriptHeight;
+        const { minHeight, maxHeight } = resolveTranscriptHeightBounds();
+        const clamped = Math.min(Math.max(currentHeight, minHeight), maxHeight);
+        if (clamped !== currentHeight) {
+            resizeTranscriptWindow(clamped);
+        }
+    };
 
     const resolveRendererEntry = () => {
         const distEntry = pathModule.join(__dirname, '..', 'dist', 'renderer', 'index.html');
@@ -124,6 +197,8 @@ const createWindowManager = ({
         if (!controlWindow && !transcriptWindow) {
             return;
         }
+
+        clampTranscriptHeightWithinWorkArea();
 
         const primaryDisplay = screen.getPrimaryDisplay();
         if (!primaryDisplay) {
@@ -200,6 +275,18 @@ const createWindowManager = ({
         }
     };
 
+    const applyTranscriptPreferredHeight = (preferredHeight) => {
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+            return;
+        }
+        const { minHeight, maxHeight } = resolveTranscriptHeightBounds();
+        const normalized = Number.isFinite(preferredHeight) ? preferredHeight : minHeight;
+        const clamped = Math.min(Math.max(Math.round(normalized), minHeight), maxHeight);
+        if (resizeTranscriptWindow(clamped)) {
+            positionOverlayWindows();
+        }
+    };
+
     const createControlWindow = () => {
         if (controlWindow && !controlWindow.isDestroyed()) {
             return controlWindow;
@@ -272,8 +359,8 @@ const createWindowManager = ({
         }
 
         transcriptWindow = new BrowserWindow({
-            width: 1080,
-            height: 720,
+            width: DEFAULT_TRANSCRIPT_WIDTH,
+            height: FALLBACK_TRANSCRIPT_HEIGHT,
             transparent: true,
             frame: false,
             icon: blankNativeImage,
@@ -289,6 +376,8 @@ const createWindowManager = ({
             backgroundColor: '#00000000',
             hiddenInMissionControl: stealthModeEnabled,
             acceptFirstMouse: true,
+            useContentSize: true,
+            enablePreferredSizeMode: true,
             webPreferences: overlayWebPreferences
         });
 
@@ -303,6 +392,10 @@ const createWindowManager = ({
         }
         transcriptWindow.setFullScreenable(false);
 
+        const { minHeight, maxHeight } = resolveTranscriptHeightBounds();
+        const initialHeight = Math.min(Math.max(FALLBACK_TRANSCRIPT_HEIGHT, minHeight), maxHeight);
+        resizeTranscriptWindow(initialHeight);
+
         transcriptWindow.once('ready-to-show', () => {
             if (stealthModeEnabled) {
                 transcriptWindow?.showInactive();
@@ -315,8 +408,16 @@ const createWindowManager = ({
 
         transcriptWindow.on('resized', positionOverlayWindows);
 
+        transcriptWindow.webContents.on('preferred-size-changed', (_event, size) => {
+            if (!size || typeof size.height !== 'number') {
+                return;
+            }
+            applyTranscriptPreferredHeight(size.height);
+        });
+
         transcriptWindow.on('closed', () => {
             transcriptWindow = null;
+            lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
             if (!controlWindow || controlWindow.isDestroyed()) {
                 if (app?.quit) {
                     app.quit();

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { initialTranscriptText, resolveTranscriptText } from '../utils/transcriptText';
+import { buildAttachmentPreview, mergeAttachmentPreviews } from '../utils/attachmentPreview';
+import { mergeAssistantText } from '../utils/assistantMessage';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const STALL_THRESHOLD_MS = 1500;
@@ -11,6 +13,7 @@ export function useTranscriptionSession({ isControlWindow }) {
     const [messages, setMessages] = useState([]);
     const [latencyStatus, setLatencyStatus] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
+    const [notification, setNotification] = useState('');
 
     const sessionIdRef = useRef(null);
     const stopTranscriptionListenerRef = useRef(null);
@@ -22,12 +25,25 @@ export function useTranscriptionSession({ isControlWindow }) {
     const latencyLabelRef = useRef('');
     const latencySuffixRef = useRef('');
     const latencySuffixReasonRef = useRef('');
+    const assistantListenerRef = useRef(null);
+    const assistantSessionIdRef = useRef(null);
+    const assistantRequestInFlightRef = useRef(false);
+    const messagesRef = useRef([]);
+    const imageDraftIdRef = useRef(null);
+    const notificationTimerRef = useRef(null);
 
     const resetTranscriptionListener = useCallback(() => {
         if (typeof stopTranscriptionListenerRef.current === 'function') {
             stopTranscriptionListenerRef.current();
         }
         stopTranscriptionListenerRef.current = null;
+    }, []);
+
+    const resetAssistantListener = useCallback(() => {
+        if (typeof assistantListenerRef.current === 'function') {
+            assistantListenerRef.current();
+        }
+        assistantListenerRef.current = null;
     }, []);
 
     const formatStalledLabel = useCallback((durationMs) => {
@@ -79,12 +95,36 @@ export function useTranscriptionSession({ isControlWindow }) {
         }, STALL_WATCH_INTERVAL_MS);
     }, [formatStalledLabel, updateLatencyStatus]);
 
+    const discardAssistantDraft = useCallback(({ discardAll = false, draftId } = {}) => {
+        const requestDiscardAll = discardAll === true;
+        const targetDraftId = requestDiscardAll ? null : (draftId || imageDraftIdRef.current);
+        if (!requestDiscardAll && !targetDraftId) {
+            return;
+        }
+        if (requestDiscardAll || targetDraftId === imageDraftIdRef.current) {
+            imageDraftIdRef.current = null;
+        }
+        if (typeof electronAPI?.assistant?.discardDraft !== 'function') {
+            return;
+        }
+        const payload = requestDiscardAll ? { discardAll: true } : { draftId: targetDraftId };
+        electronAPI.assistant.discardDraft(payload).catch((error) => {
+            console.warn('Failed to discard assistant draft', error);
+        });
+    }, []);
+
     const clearTranscript = useCallback(() => {
         pendingMessageIdRef.current = null;
         continuationMessageIdRef.current = null;
         lastMessageUpdateTsRef.current = 0;
         setMessages([]);
-    }, []);
+        messagesRef.current = [];
+        assistantSessionIdRef.current = null;
+        assistantRequestInFlightRef.current = false;
+        imageDraftIdRef.current = null;
+        setNotification('');
+        discardAssistantDraft({ discardAll: true });
+    }, [discardAssistantDraft]);
 
     const teardownSession = useCallback(async () => {
         resetTranscriptionListener();
@@ -103,7 +143,8 @@ export function useTranscriptionSession({ isControlWindow }) {
         setMessages([]);
         setIsStreaming(false);
         resetLatencyWatchdog();
-    }, [isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
+        discardAssistantDraft({ discardAll: true });
+    }, [discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
 
     const getSessionId = useCallback(() => sessionIdRef.current, []);
 
@@ -199,7 +240,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                                 lastMessageUpdateTsRef.current = now;
                                 const initialText = initialTranscriptText(textContext);
                                 if (initialText) {
-                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left' });
+                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left', sent: false });
                                 }
                                 return next;
                             }
@@ -221,7 +262,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                             lastMessageUpdateTsRef.current = now;
                             const initialText = initialTranscriptText(textContext);
                             if (initialText) {
-                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left' });
+                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left', sent: false });
                             }
                             return next;
                         });
@@ -293,7 +334,299 @@ export function useTranscriptionSession({ isControlWindow }) {
     useEffect(() => () => {
         resetTranscriptionListener();
         resetLatencyWatchdog();
-    }, [resetLatencyWatchdog, resetTranscriptionListener]);
+        resetAssistantListener();
+        if (notificationTimerRef.current) {
+            clearTimeout(notificationTimerRef.current);
+            notificationTimerRef.current = null;
+        }
+        setNotification('');
+    }, [resetAssistantListener, resetLatencyWatchdog, resetTranscriptionListener]);
+
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
+
+    const showNotification = useCallback((text) => {
+        if (!text) {
+            return;
+        }
+        setNotification(text);
+        if (notificationTimerRef.current) {
+            clearTimeout(notificationTimerRef.current);
+        }
+        notificationTimerRef.current = setTimeout(() => {
+            setNotification('');
+            notificationTimerRef.current = null;
+        }, 2600);
+    }, []);
+
+    const appendAssistantNotice = useCallback((text) => {
+        if (!text) {
+            return;
+        }
+        showNotification(text);
+        setMessages((prev) => ([
+            ...prev,
+            {
+                id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                text,
+                isFinal: true,
+                ts: Date.now(),
+                side: 'right'
+            }
+        ]));
+    }, [showNotification]);
+
+    const upsertImageBubble = useCallback(({ draftId, attachments }) => {
+        if (!draftId || !attachments?.length) {
+            return;
+        }
+        setMessages((prev) => {
+            const next = [...prev];
+            const existingIndex = next.findIndex((msg) => msg.side === 'right' && msg.draftId === draftId && msg.type === 'image');
+            const normalizedAttachments = attachments.map((att, index) => {
+                if (att?.dataUrl) {
+                    return att;
+                }
+                return buildAttachmentPreview({
+                    image: att,
+                    fallbackId: `${draftId}-${Date.now()}-${index}`
+                });
+            });
+            if (existingIndex !== -1) {
+                const existing = next[existingIndex];
+                const merged = mergeAttachmentPreviews(existing.attachments || [], normalizedAttachments);
+                next[existingIndex] = { ...existing, attachments: merged, sent: false, isFinal: false };
+                return next;
+            }
+            next.push({
+                id: draftId,
+                draftId,
+                type: 'image',
+                attachments: normalizedAttachments,
+                text: '',
+                isFinal: false,
+                ts: Date.now(),
+                side: 'right',
+                sent: false
+            });
+            return next;
+        });
+    }, []);
+
+    const updateAssistantMessage = useCallback((payload = {}) => {
+        const { messageId } = payload;
+        if (!messageId) {
+            return;
+        }
+        const delta = typeof payload.delta === 'string' ? payload.delta : '';
+        const serverText = typeof payload.text === 'string' ? payload.text : undefined;
+        const isFinal = Boolean(payload.isFinal);
+        setMessages((prev) => {
+            let matched = false;
+            const next = prev.map((msg) => {
+                if (msg.id !== messageId) {
+                    return msg;
+                }
+                matched = true;
+                const { text: mergedText, didUpdate } = mergeAssistantText(msg.text, { delta, serverText });
+                const needsUpdate = didUpdate || msg.isFinal !== isFinal;
+                if (!needsUpdate) {
+                    return msg;
+                }
+                return { ...msg, text: mergedText, isFinal };
+            });
+            if (!matched) {
+                const { text: newText, didUpdate } = mergeAssistantText('', { delta, serverText });
+                if (didUpdate) {
+                    next.push({
+                        id: messageId,
+                        text: newText,
+                        isFinal,
+                        ts: Date.now(),
+                        side: 'right'
+                    });
+                }
+            }
+            return next;
+        });
+    }, []);
+
+    const handleAssistantError = useCallback((payload = {}) => {
+        const messageId = payload.messageId;
+        const message = payload?.error?.message || payload.message || 'Assistant error';
+        const finalText = `Assistant error: ${message}`;
+        setMessages((prev) => {
+            let updated = false;
+            const next = prev.map((msg) => {
+                if (messageId && msg.id === messageId) {
+                    updated = true;
+                    return { ...msg, text: finalText, isFinal: true };
+                }
+                return msg;
+            });
+            if (!updated) {
+                next.push({
+                    id: messageId || `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    text: finalText,
+                    isFinal: true,
+                    ts: Date.now(),
+                    side: 'right'
+                });
+            }
+            return next;
+        });
+    }, []);
+
+    const attachAssistantEvents = useCallback(() => {
+        if (typeof electronAPI?.assistant?.onEvent !== 'function') {
+            return;
+        }
+        resetAssistantListener();
+        assistantListenerRef.current = electronAPI.assistant.onEvent((payload = {}) => {
+            const { type, sessionId } = payload;
+            if (!type) {
+                return;
+            }
+            if (sessionId && assistantSessionIdRef.current && sessionId !== assistantSessionIdRef.current && type !== 'stopped') {
+                return;
+            }
+            switch (type) {
+                case 'started':
+                    assistantSessionIdRef.current = sessionId || assistantSessionIdRef.current;
+                    break;
+                case 'update':
+                    updateAssistantMessage(payload);
+                    if (payload.isFinal) {
+                        assistantSessionIdRef.current = null;
+                    }
+                    break;
+                case 'error':
+                    handleAssistantError(payload);
+                    assistantSessionIdRef.current = null;
+                    break;
+                case 'stopped':
+                    assistantSessionIdRef.current = null;
+                    break;
+                default:
+                    break;
+            }
+        });
+    }, [handleAssistantError, resetAssistantListener, updateAssistantMessage]);
+
+    const attachImageToDraft = useCallback(async (image) => {
+        if (image?.error) {
+            appendAssistantNotice(`Capture error: ${image.error}`);
+            return { ok: false, reason: 'capture-error' };
+        }
+        if (!image || !image.data || !image.mime) {
+            appendAssistantNotice('Capture failed: missing image data.');
+            return { ok: false, reason: 'invalid-image' };
+        }
+        if (assistantRequestInFlightRef.current) {
+            return { ok: false, reason: 'busy' };
+        }
+        if (typeof electronAPI?.assistant?.attachImage !== 'function') {
+            appendAssistantNotice('Assistant image attach is unavailable.');
+            return { ok: false, reason: 'unavailable' };
+        }
+        try {
+            const response = await electronAPI.assistant.attachImage({
+                draftId: imageDraftIdRef.current,
+                image
+            });
+            if (!response?.ok) {
+                const message = response?.error?.message || 'Failed to attach image.';
+                appendAssistantNotice(message);
+                return { ok: false, reason: 'error' };
+            }
+            imageDraftIdRef.current = response.draftId;
+            const metadataList = Array.isArray(response.attachments) ? response.attachments : [];
+            const latestMeta = metadataList.at(-1);
+            const preview = buildAttachmentPreview({
+                image,
+                metadata: latestMeta,
+                fallbackId: `${response.draftId || 'draft'}-${metadataList.length || 0}-${Date.now()}`
+            });
+            upsertImageBubble({ draftId: response.draftId, attachments: [preview] });
+            return { ok: true, draftId: response.draftId, attachments: response.attachments };
+        } catch (error) {
+            appendAssistantNotice(`Assistant error: ${error?.message || 'Unknown error'}`);
+            return { ok: false, error };
+        }
+    }, [appendAssistantNotice, upsertImageBubble]);
+
+    const requestAssistantResponse = useCallback(async () => {
+        if (assistantRequestInFlightRef.current) {
+            return { ok: false, reason: 'busy' };
+        }
+        const pendingMessages = (messagesRef.current || []).filter((msg) => {
+            if (msg.sent === true) return false;
+            if (msg.side === 'left' && typeof msg.text === 'string' && msg.text.trim().length > 0) return true;
+            if (msg.side === 'right' && msg.type === 'image' && Array.isArray(msg.attachments) && msg.attachments.length > 0) return true;
+            return false;
+        });
+        if (pendingMessages.length === 0) {
+            appendAssistantNotice('no new message available to send');
+            return { ok: false, reason: 'no-unsent' };
+        }
+
+        const payloadMessages = pendingMessages.map((msg) => ({
+            id: msg.id,
+            text: typeof msg.text === 'string' ? msg.text : '',
+            side: msg.side,
+            type: msg.type
+        }));
+
+        assistantRequestInFlightRef.current = true;
+        try {
+            if (typeof electronAPI?.assistant?.finalizeDraft !== 'function') {
+                throw new Error('Assistant finalize API is unavailable.');
+            }
+            const response = await electronAPI.assistant.finalizeDraft({
+                draftId: imageDraftIdRef.current,
+                messages: payloadMessages
+            });
+            const { sessionId, messageId, draftId } = response || {};
+            if (!response?.ok || !sessionId || !messageId) {
+                const message = response?.error?.message || 'Assistant response is missing identifiers.';
+                throw new Error(message);
+            }
+            assistantSessionIdRef.current = sessionId;
+            const now = Date.now();
+            const sentIds = new Set(pendingMessages.map((msg) => msg.id));
+            setMessages((prev) => {
+                const updated = prev.map((msg) => {
+                    if (sentIds.has(msg.id)) {
+                        return { ...msg, sent: true, isFinal: true };
+                    }
+                    return msg;
+                });
+                const alreadyHasMessage = updated.some((msg) => msg.id === messageId);
+                if (alreadyHasMessage) {
+                    return updated;
+                }
+                return [
+                    ...updated,
+                    {
+                        id: messageId,
+                        text: 'Thinking...',
+                        isFinal: false,
+                        ts: now,
+                        side: 'right',
+                        assistantSessionId: sessionId
+                    }
+                ];
+            });
+            imageDraftIdRef.current = null;
+            return { ok: true, sessionId, messageId, draftId };
+        } catch (error) {
+            appendAssistantNotice(`Assistant error: ${error?.message || 'Unknown error'}`);
+            return { ok: false, error };
+        } finally {
+            assistantRequestInFlightRef.current = false;
+        }
+    }, [appendAssistantNotice]);
 
     return useMemo(() => ({
         status,
@@ -306,13 +639,21 @@ export function useTranscriptionSession({ isControlWindow }) {
         stopTranscriptionSession,
         teardownSession,
         attachTranscriptionEvents,
-        getSessionId
+        attachAssistantEvents,
+        requestAssistantResponse,
+        attachImageToDraft,
+        getSessionId,
+        notification
     }), [
+        attachAssistantEvents,
         attachTranscriptionEvents,
+        attachImageToDraft,
         clearTranscript,
         getSessionId,
         isStreaming,
         latencyStatus,
+        notification,
+        requestAssistantResponse,
         messages,
         startTranscriptionSession,
         status,

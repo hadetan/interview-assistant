@@ -2,7 +2,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage } = require('electron');
 const loadTranscriptionConfig = require('../config/transcription');
+const loadAssistantConfig = require('../config/assistant');
 const { createTranscriptionService } = require('../transcription');
+const { createAssistantService } = require('../assistant');
 const {
     loadEnv,
     parseArgvFlags,
@@ -13,6 +15,7 @@ const { registerDesktopCaptureHandler } = require('./ipc/desktop-capture');
 const { createWindowManager } = require('./window-manager');
 const { createShortcutManager } = require('./shortcuts');
 const { registerTranscriptionHandlers } = require('./ipc/transcription');
+const { registerAssistantHandlers } = require('./ipc/assistant');
 
 loadEnv();
 
@@ -24,6 +27,10 @@ let transcriptionService = null;
 let transcriptionInitPromise = null;
 let transcriptionConfig = null;
 const sessionWindowMap = new Map();
+let assistantService = null;
+let assistantInitPromise = null;
+let assistantConfig = null;
+const assistantSessionWindowMap = new Map();
 
 const WINDOW_VERTICAL_GAP = 14;
 const WINDOW_TOP_MARGIN = 12;
@@ -97,6 +104,22 @@ const ensureTranscriptionService = async () => {
     return transcriptionService;
 };
 
+const ensureAssistantService = async () => {
+    if (assistantInitPromise) {
+        try {
+            await assistantInitPromise;
+        } catch (error) {
+            console.error('[Assistant] Initialization failed', error);
+        }
+    }
+
+    if (!assistantService) {
+        throw new Error('Assistant service is unavailable.');
+    }
+
+    return assistantService;
+};
+
 const initializeApp = async () => {
     windowManager.createControlWindow();
     windowManager.createTranscriptWindow();
@@ -108,6 +131,8 @@ const initializeApp = async () => {
         getTranscriptWindow,
         moveStepPx
     } = windowManager;
+
+    assistantConfig = loadAssistantConfig();
 
     // Controller commands registry
     const toggleShortcut = 'CommandOrControl+Shift+/';
@@ -142,6 +167,45 @@ const initializeApp = async () => {
             transcriptWindow.webContents.send('control-window:clear-transcript');
         }
     });
+
+    const assistantEnabled = assistantConfig?.isEnabled !== false;
+    let attachImageShortcut = null;
+
+    if (assistantEnabled) {
+        const assistantShortcut = 'CommandOrControl+Shift+Alt+Enter';
+        shortcutManager.registerShortcut(assistantShortcut, () => {
+            const transcriptWindow = getTranscriptWindow();
+            if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+                transcriptWindow.webContents.send('control-window:assistant-send');
+            }
+        });
+
+        attachImageShortcut = 'CommandOrControl+Alt+H';
+        shortcutManager.registerShortcut(attachImageShortcut, async () => {
+            const transcriptWindow = getTranscriptWindow();
+            if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+                return;
+            }
+            try {
+                const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } });
+                const source = sources[0];
+                if (!source || !source.thumbnail) {
+                    throw new Error('No screen source available for capture.');
+                }
+                const buffer = source.thumbnail.toPNG();
+                const data = buffer.toString('base64');
+                transcriptWindow.webContents.send('control-window:assistant-attach', {
+                    name: `${source.name || 'screen'}.png`,
+                    mime: 'image/png',
+                    data
+                });
+            } catch (error) {
+                transcriptWindow.webContents.send('control-window:assistant-attach', {
+                    error: error?.message || 'Failed to capture screen.'
+                });
+            }
+        });
+    }
 
     const moveLeft = 'CommandOrControl+Left';
     shortcutManager.registerShortcut(moveLeft, () => moveOverlaysBy(-moveStepPx, 0));
@@ -182,7 +246,7 @@ const initializeApp = async () => {
                 }
             });
 
-            shortcutManager.unregisterAllShortcutsExcept(new Set([visibilityToggleShortcut]));
+            shortcutManager.unregisterAllShortcutsExcept(new Set([visibilityToggleShortcut, attachImageShortcut]));
             return;
         }
 
@@ -292,6 +356,55 @@ const initializeApp = async () => {
         getTranscriptionService: () => transcriptionService,
         transcriptionConfig,
         sessionWindowMap
+    });
+
+    assistantInitPromise = createAssistantService(assistantConfig)
+        .then((service) => {
+            assistantService = service;
+
+            const emitToOwner = (sessionId, payload) => {
+                const windowId = assistantSessionWindowMap.get(sessionId);
+                if (!windowId) {
+                    return;
+                }
+                const targetWindow = BrowserWindow.fromId(windowId);
+                if (!targetWindow || targetWindow.isDestroyed()) {
+                    return;
+                }
+                targetWindow.webContents.send('assistant:stream', payload);
+            };
+
+            service.on('session-started', ({ sessionId, messageId }) => {
+                emitToOwner(sessionId, { type: 'started', sessionId, messageId });
+            });
+
+            service.on('session-update', (payload) => {
+                emitToOwner(payload.sessionId, { type: 'update', ...payload });
+            });
+
+            service.on('session-error', (payload) => {
+                emitToOwner(payload.sessionId, { type: 'error', ...payload });
+            });
+
+            service.on('session-stopped', (payload) => {
+                emitToOwner(payload.sessionId, { type: 'stopped', ...payload });
+                assistantSessionWindowMap.delete(payload.sessionId);
+            });
+
+            return service;
+        })
+        .catch((error) => {
+            console.error('[Assistant] Failed to initialize service', error);
+            assistantService = null;
+        });
+
+    registerAssistantHandlers({
+        ipcMain,
+        BrowserWindow,
+        ensureAssistantService,
+        getAssistantService: () => assistantService,
+        sessionWindowMap: assistantSessionWindowMap,
+        assistantConfig
     });
 };
 

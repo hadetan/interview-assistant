@@ -6,7 +6,17 @@ const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const SCROLL_STEP_PX = 140;
 
 export default function TranscriptWindow({ session, chunkTimeslice }) {
-    const { messages, latencyStatus, isStreaming, attachTranscriptionEvents, clearTranscript } = session;
+    const {
+        messages,
+        latencyStatus,
+        isStreaming,
+        attachTranscriptionEvents,
+        attachAssistantEvents,
+        clearTranscript,
+        requestAssistantResponse,
+        attachImageToDraft,
+        notification
+    } = session;
     const { transcriptRef, scrollBy, resetScroll } = useTranscriptScroll({ messages });
 
     const handleClear = useCallback(() => {
@@ -16,7 +26,8 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
 
     useEffect(() => {
         attachTranscriptionEvents();
-    }, [attachTranscriptionEvents]);
+        attachAssistantEvents();
+    }, [attachAssistantEvents, attachTranscriptionEvents]);
 
     useEffect(() => {
         const api = electronAPI?.controlWindow;
@@ -39,6 +50,16 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
                 handleClear();
             }));
         }
+        if (typeof api.onAssistantSend === 'function') {
+            unsubscribes.push(api.onAssistantSend(() => {
+                requestAssistantResponse();
+            }));
+        }
+        if (typeof api.onAssistantAttach === 'function') {
+            unsubscribes.push(api.onAssistantAttach((payload) => {
+                attachImageToDraft(payload);
+            }));
+        }
         return () => {
             unsubscribes.forEach((fn) => {
                 if (typeof fn === 'function') {
@@ -46,10 +67,10 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
                 }
             });
         };
-    }, [handleClear, scrollBy]);
+    }, [attachImageToDraft, handleClear, requestAssistantResponse, scrollBy]);
 
     return (
-        <div className="transcript-shell">
+        <div className="transcript-shell" style={messages.length === 0 ? {visibility: 'hidden'} : {visibility: 'visible'}}>
             <section className="transcript-panel" aria-live="polite">
                 <header className="transcript-heading">
                     <span className={`state-dot ${isStreaming ? 'state-dot-live' : ''}`} aria-hidden="true" />
@@ -66,6 +87,7 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
                                     side={msg.side || 'left'}
                                     text={msg.text}
                                     isFinal={msg.isFinal}
+                                    attachments={msg.attachments}
                                 />
                             ))
                         )}
