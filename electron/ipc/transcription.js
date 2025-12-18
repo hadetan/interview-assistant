@@ -35,7 +35,8 @@ const registerTranscriptionHandlers = ({
         const sessionId = await service.startSession({
             sessionId: payload.sessionId,
             sourceName: payload.sourceName,
-            platform: payload.platform
+            platform: payload.platform,
+            sourceType: payload.sourceType
         });
 
         windowMap.set(sessionId, targetWindow.id);

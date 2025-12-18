@@ -293,7 +293,7 @@ const createWindowManager = ({
         }
 
         controlWindow = new BrowserWindow({
-            width: 320,
+            width: 420,
             height: 90,
             transparent: true,
             frame: false,

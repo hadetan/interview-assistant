@@ -2,10 +2,15 @@ import React, { useMemo } from 'react';
 import CodeSnippet from './CodeSnippet';
 import { parseFencedCode } from '../utils/parseFencedCode';
 
-function ChatBubble({ text, side = 'left', isFinal = true, attachments = [] }) {
+function ChatBubble({ text, side = 'left', isFinal = true, attachments = [], sourceType }) {
     const bubbleSide = side === 'right' ? 'right' : 'left';
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     const segments = useMemo(() => parseFencedCode(text || ''), [text]);
+    const isMicSource = sourceType === 'mic';
+    const bubbleClasses = [`chat-bubble`, bubbleSide];
+    if (isMicSource) {
+        bubbleClasses.push('chat-bubble-mic');
+    }
 
     const renderSegment = (segment, index) => {
         if (segment.type === 'code') {
@@ -32,7 +37,7 @@ function ChatBubble({ text, side = 'left', isFinal = true, attachments = [] }) {
     };
 
     return (
-        <div className={`chat-bubble ${bubbleSide}`} data-final={isFinal ? 'true' : 'false'}>
+        <div className={bubbleClasses.join(' ')} data-final={isFinal ? 'true' : 'false'}>
             {hasAttachments && (
                 <div className="chat-bubble-attachments">
                     {attachments.map((att) => (

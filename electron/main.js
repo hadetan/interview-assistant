@@ -311,9 +311,9 @@ const initializeApp = async () => {
                 transcriptWindow.webContents.send('transcription:stream', payload);
             };
 
-            service.on('session-started', ({ sessionId, sourceName }) => {
-                emitToOwner(sessionId, { type: 'started', sessionId, sourceName });
-                emitToTranscriptOverlay({ type: 'started', sessionId, sourceName });
+            service.on('session-started', ({ sessionId, sourceName, sourceType }) => {
+                emitToOwner(sessionId, { type: 'started', sessionId, sourceName, sourceType });
+                emitToTranscriptOverlay({ type: 'started', sessionId, sourceName, sourceType });
             });
 
             service.on('session-update', (payload) => {

@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { TRANSCRIPTION_SOURCE_TYPES as SOURCE_TYPES } from './useTranscriptionSession';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const DEFAULT_MIME = 'audio/webm;codecs=opus';
@@ -30,37 +31,26 @@ export function useRecorder({
 }) {
     const [isSelectingSource, setIsSelectingSource] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
+    const [isMicReady, setIsMicReady] = useState(false);
+    const [isMicActive, setIsMicActive] = useState(false);
+    const [isMicPending, setIsMicPending] = useState(false);
+    const [micError, setMicError] = useState('');
+    const [micPendingAction, setMicPendingAction] = useState(null);
 
     const mediaRecorderRef = useRef(null);
     const captureStreamRef = useRef(null);
     const recordingMimeTypeRef = useRef(preferredMimeType || DEFAULT_MIME);
     const chunkSequenceRef = useRef(0);
-
-    const stopCapture = useCallback(async () => {
-        if (mediaRecorderRef.current) {
-            try {
-                mediaRecorderRef.current.stop();
-            } catch (_error) {
-                // ignore
-            }
-            mediaRecorderRef.current = null;
-        }
-        if (captureStreamRef.current) {
-            captureStreamRef.current.getTracks().forEach((track) => track.stop());
-            captureStreamRef.current = null;
-        }
-        chunkSequenceRef.current = 0;
-        recordingMimeTypeRef.current = preferredMimeType || DEFAULT_MIME;
-        setIsSelectingSource(false);
-        setIsRecording(false);
-        await sessionApi.teardownSession();
-    }, [preferredMimeType, sessionApi]);
+    const micStreamRef = useRef(null);
+    const micRecorderRef = useRef(null);
+    const micMimeTypeRef = useRef(preferredMimeType || DEFAULT_MIME);
+    const micChunkSequenceRef = useRef(0);
 
     const handleChunk = useCallback(async (event) => {
         if (!event?.data?.size) {
             return;
         }
-        const sessionId = sessionApi.getSessionId();
+        const sessionId = sessionApi.getSessionId(SOURCE_TYPES.SYSTEM);
         if (!sessionId) {
             return;
         }
@@ -75,12 +65,264 @@ export function useRecorder({
                 mimeType: recordingMimeTypeRef.current,
                 data: arrayBuffer,
                 timestamp: captureTimestamp,
-                captureTimestamp
+                captureTimestamp,
+                sourceType: SOURCE_TYPES.SYSTEM
             });
         } catch (error) {
             console.error('Failed to dispatch audio chunk', error);
         }
     }, [sessionApi]);
+
+    const handleMicChunk = useCallback(async (event) => {
+        if (!event?.data?.size) {
+            return;
+        }
+        const sessionId = sessionApi.getSessionId(SOURCE_TYPES.MIC);
+        if (!sessionId) {
+            return;
+        }
+        try {
+            const sequence = micChunkSequenceRef.current;
+            micChunkSequenceRef.current += 1;
+            const arrayBuffer = await event.data.arrayBuffer();
+            const captureTimestamp = Date.now();
+            electronAPI?.transcription?.sendChunk?.({
+                sessionId,
+                sequence,
+                mimeType: micMimeTypeRef.current,
+                data: arrayBuffer,
+                timestamp: captureTimestamp,
+                captureTimestamp,
+                sourceType: SOURCE_TYPES.MIC
+            });
+        } catch (error) {
+            console.error('Failed to dispatch microphone audio chunk', error);
+        }
+    }, [sessionApi]);
+
+    const initializeMicStream = useCallback(async () => {
+        const existingStream = micStreamRef.current;
+        if (existingStream) {
+            const hasLiveTrack = existingStream.getTracks().some((track) => track.readyState === 'live');
+            if (hasLiveTrack) {
+                setIsMicReady(true);
+                return existingStream;
+            }
+            existingStream.getTracks().forEach((track) => track.stop());
+            micStreamRef.current = null;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            micStreamRef.current = stream;
+            setIsMicReady(true);
+            setMicError('');
+            return stream;
+        } catch (error) {
+            console.error('Failed to initialize microphone stream', error);
+            setIsMicReady(false);
+            setMicError(error?.message || 'Microphone unavailable');
+            micStreamRef.current = null;
+            return null;
+        }
+    }, []);
+
+    const stopMicRecorder = useCallback(async ({ keepStream = true, stopSession = false } = {}) => {
+        const recorder = micRecorderRef.current;
+        if (recorder) {
+            let resolveStop;
+            const stopPromise = new Promise((resolve) => {
+                resolveStop = resolve;
+            });
+            const handleStop = () => {
+                recorder.removeEventListener('stop', handleStop);
+                recorder.removeEventListener('dataavailable', handleMicChunk);
+                if (resolveStop) {
+                    resolveStop();
+                }
+            };
+            recorder.addEventListener('stop', handleStop, { once: true });
+            try {
+                if (recorder.state !== 'inactive') {
+                    recorder.stop();
+                } else {
+                    recorder.removeEventListener('dataavailable', handleMicChunk);
+                    handleStop();
+                }
+            } catch (error) {
+                console.warn('Mic recorder stop failed', error);
+                recorder.removeEventListener('dataavailable', handleMicChunk);
+                handleStop();
+            }
+            try {
+                await stopPromise;
+            } catch (_error) {
+                // ignore
+            }
+        }
+        micRecorderRef.current = null;
+        micChunkSequenceRef.current = 0;
+        micMimeTypeRef.current = preferredMimeType || DEFAULT_MIME;
+        setIsMicActive(false);
+        if (!keepStream && micStreamRef.current) {
+            micStreamRef.current.getTracks().forEach((track) => track.stop());
+            micStreamRef.current = null;
+            setIsMicReady(false);
+        }
+        if (stopSession) {
+            const currentMicSession = sessionApi.getSessionId?.(SOURCE_TYPES.MIC);
+            if (currentMicSession) {
+                try {
+                    await sessionApi.stopSourceSession({ sourceType: SOURCE_TYPES.MIC });
+                } catch (error) {
+                    console.error('Failed to stop mic transcription session', error);
+                }
+            }
+        }
+    }, [handleMicChunk, preferredMimeType, sessionApi]);
+
+    const startMicProcessing = useCallback(async () => {
+        if (isMicPending || isMicActive) {
+            return { ok: false, reason: 'busy' };
+        }
+        setIsMicPending(true);
+        setMicPendingAction('starting');
+        setMicError('');
+        try {
+            const stream = await initializeMicStream();
+            if (!stream) {
+                return { ok: false, reason: 'unavailable' };
+            }
+
+            if (!sessionApi.getSessionId(SOURCE_TYPES.MIC)) {
+                await sessionApi.startSourceSession({
+                    sourceName: 'Microphone',
+                    platform,
+                    sourceType: SOURCE_TYPES.MIC
+                });
+            }
+
+            const recorderOptions = buildRecorderOptions(preferredMimeType);
+            let recorder;
+            try {
+                recorder = new MediaRecorder(stream, recorderOptions);
+            } catch (error) {
+                console.warn('Preferred mic mime type failed, falling back to default', recorderOptions, error);
+                recorder = new MediaRecorder(stream);
+            }
+            micRecorderRef.current = recorder;
+            micMimeTypeRef.current = recorder?.mimeType || preferredMimeType || DEFAULT_MIME;
+            recorder.addEventListener('dataavailable', handleMicChunk);
+            recorder.addEventListener('error', async (event) => {
+                console.error('Microphone recorder error', event.error);
+                sessionApi.setStatus?.(`Mic recorder error: ${event.error?.message || event.error}`);
+                setMicError(event.error?.message || 'Mic recorder error');
+                await stopMicRecorder({ keepStream: true, stopSession: true });
+                setIsMicPending(false);
+                setMicPendingAction(null);
+            });
+            recorder.addEventListener('stop', () => {
+                micRecorderRef.current = null;
+            });
+            micChunkSequenceRef.current = 0;
+            recorder.start(chunkTimeslice);
+            setIsMicActive(true);
+            const systemStreaming = sessionApi.isSourceStreaming?.(SOURCE_TYPES.SYSTEM);
+            sessionApi.setStatus?.(systemStreaming ? 'Capturing system + mic audio…' : 'Capturing microphone audio…');
+            return { ok: true };
+        } catch (error) {
+            console.error('Failed to enable microphone capture', error);
+            setMicError(error?.message || 'Microphone unavailable');
+            const activeMicSession = sessionApi.getSessionId(SOURCE_TYPES.MIC);
+            if (activeMicSession) {
+                try {
+                    await sessionApi.stopSourceSession({ sourceType: SOURCE_TYPES.MIC });
+                } catch (_err) {
+                    // ignore
+                }
+            }
+            return { ok: false, error };
+        } finally {
+            setIsMicPending(false);
+            setMicPendingAction(null);
+        }
+    }, [
+        chunkTimeslice,
+        handleMicChunk,
+        initializeMicStream,
+        isMicActive,
+        isMicPending,
+        platform,
+        preferredMimeType,
+        sessionApi,
+        stopMicRecorder
+    ]);
+
+    const stopMicProcessing = useCallback(async () => {
+        if (isMicPending) {
+            return { ok: false, reason: 'busy' };
+        }
+        const hasSession = Boolean(sessionApi.getSessionId(SOURCE_TYPES.MIC));
+        if (!isMicActive && !hasSession) {
+            return { ok: true };
+        }
+        setIsMicPending(true);
+        setMicPendingAction('stopping');
+        try {
+            await stopMicRecorder({ keepStream: true, stopSession: true });
+            const systemStreaming = sessionApi.isSourceStreaming?.(SOURCE_TYPES.SYSTEM);
+            sessionApi.setStatus?.(systemStreaming ? 'Capturing system audio…' : 'Idle');
+            setMicError('');
+            return { ok: true };
+        } catch (error) {
+            console.error('Failed to stop microphone capture', error);
+            setMicError(error?.message || 'Failed to stop microphone');
+            return { ok: false, error };
+        } finally {
+            setIsMicPending(false);
+            setMicPendingAction(null);
+        }
+    }, [isMicActive, isMicPending, sessionApi, stopMicRecorder]);
+
+    const toggleMicProcessing = useCallback(async () => {
+        if (!isRecording) {
+            return { ok: false, reason: 'system-inactive' };
+        }
+        if (isMicPending) {
+            return { ok: false, reason: 'busy' };
+        }
+        if (isMicActive) {
+            return stopMicProcessing();
+        }
+        return startMicProcessing();
+    }, [isMicActive, isMicPending, isRecording, startMicProcessing, stopMicProcessing]);
+
+    const stopCapture = useCallback(async () => {
+        setIsMicPending(false);
+        setMicPendingAction(null);
+        await stopMicRecorder({ keepStream: false, stopSession: false });
+        setIsMicActive(false);
+        setIsMicReady(false);
+        setMicError('');
+        if (mediaRecorderRef.current) {
+            try {
+                mediaRecorderRef.current.stop();
+            } catch (_error) {
+                // ignore
+            }
+            mediaRecorderRef.current = null;
+        }
+        if (captureStreamRef.current) {
+            captureStreamRef.current.getTracks().forEach((track) => track.stop());
+            captureStreamRef.current = null;
+        }
+        chunkSequenceRef.current = 0;
+        recordingMimeTypeRef.current = preferredMimeType || DEFAULT_MIME;
+        micChunkSequenceRef.current = 0;
+        micMimeTypeRef.current = preferredMimeType || DEFAULT_MIME;
+        setIsSelectingSource(false);
+        setIsRecording(false);
+        await sessionApi.teardownSession();
+    }, [preferredMimeType, sessionApi, stopMicRecorder]);
 
     const startStreamingWithSource = useCallback(async (source) => {
         const sourceId = source?.id;
@@ -112,10 +354,12 @@ export function useRecorder({
             return;
         }
         const audioStream = new MediaStream(audioTracks);
+        await initializeMicStream();
         try {
             await sessionApi.startTranscriptionSession({
                 sourceName: source.name || source.id,
-                platform
+                platform,
+                sourceType: SOURCE_TYPES.SYSTEM
             });
         } catch (error) {
             console.error('Failed to start transcription session', error);
@@ -153,7 +397,7 @@ export function useRecorder({
         sessionApi.setStatus('Capturing system audio…');
         setIsRecording(true);
         setIsSelectingSource(false);
-    }, [chunkTimeslice, handleChunk, platform, preferredMimeType, sessionApi, stopCapture]);
+    }, [chunkTimeslice, handleChunk, initializeMicStream, platform, preferredMimeType, sessionApi, stopCapture]);
 
     const startRecording = useCallback(async () => {
         if (!electronAPI?.getDesktopSources) {
@@ -161,6 +405,10 @@ export function useRecorder({
             return;
         }
         setIsSelectingSource(true);
+        setIsMicReady(false);
+        setIsMicPending(false);
+        setMicPendingAction(null);
+        setMicError('');
         sessionApi.setStatus('Requesting capture sources…');
         try {
             const sources = await electronAPI.getDesktopSources({ types: ['screen', 'window'] });
@@ -187,6 +435,16 @@ export function useRecorder({
         isSelectingSource,
         isRecording,
         startRecording,
-        stopRecording
+        stopRecording,
+        startMic: startMicProcessing,
+        stopMic: stopMicProcessing,
+        toggleMic: toggleMicProcessing,
+        mic: {
+            isReady: isMicReady,
+            isActive: isMicActive,
+            isPending: isMicPending,
+            pendingAction: micPendingAction,
+            error: micError
+        }
     };
 }

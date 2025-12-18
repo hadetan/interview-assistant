@@ -69,6 +69,30 @@ body {
     /* box-shadow: 0 10px 30px rgba(2, 6, 23, 0.6); */
 }
 
+.control-mic {
+    background: rgba(21, 128, 61, 0.35);
+    color: #bbf7d0;
+    border: 1px solid rgba(74, 222, 128, 0.45);
+}
+
+.control-mic-active {
+    background: linear-gradient(135deg, rgba(134, 239, 172, 0.35), rgba(74, 222, 128, 0.4));
+    color: #ecfdf5;
+    border-color: rgba(74, 222, 128, 0.65);
+}
+
+.control-hint {
+    margin-top: 0.45rem;
+    font-size: 0.78rem;
+    text-align: center;
+    color: rgba(226, 232, 240, 0.75);
+    pointer-events: auto;
+}
+
+.control-hint-error {
+    color: #f87171;
+}
+
 .transcript-shell {
     display: flex;
     flex-direction: column;
@@ -173,6 +197,11 @@ body {
     color: #f8fafc;
     border: 1px solid rgba(148, 163, 184, 0.35);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+.chat-bubble.chat-bubble-mic {
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    box-shadow: 0 8px 28px rgba(22, 101, 52, 0.15);
 }
 
 .chat-bubble.left {
