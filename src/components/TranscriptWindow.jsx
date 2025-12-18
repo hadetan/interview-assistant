@@ -87,6 +87,7 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
                                     side={msg.side || 'left'}
                                     text={msg.text}
                                     isFinal={msg.isFinal}
+                                    sourceType={msg.sourceType}
                                     attachments={msg.attachments}
                                 />
                             ))

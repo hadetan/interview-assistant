@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         attachImage: (payload) => ipcRenderer.invoke('assistant:attach-image', payload),
         finalizeDraft: (payload) => ipcRenderer.invoke('assistant:finalize-draft', payload),
         discardDraft: (payload) => ipcRenderer.invoke('assistant:discard-draft', payload),
+        clearHistory: (payload) => ipcRenderer.invoke('assistant:clear-history', payload),
         stop: (sessionId) => {
             if (!sessionId) {
                 return Promise.resolve({ ok: false });

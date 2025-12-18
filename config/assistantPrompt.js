@@ -19,6 +19,13 @@ const responseDiscipline = [
     'Structure answers so any short notes or assumptions come first, followed by the complete solution once.'
 ].map((rule) => `- ${rule}`).join('\n');
 
+const transcriptHandling = [
+    'Treat the transcript JSON as the canonical conversation record. Each entry surfaces who spoke ("interviewer" vs "user") and must be processed in order without merging lines.',
+    'Answer interviewer questions from the transcript before considering any other inputs.',
+    'Only fall back to attached images when the transcript does not contain an actionable request.',
+    'If neither transcripts nor attachments provide a clear task, reply exactly with "No response returned".'
+].map((rule) => `- ${rule}`).join('\n');
+
 const alignmentWorkflow = [
     'Before writing code, restate (internally) the problem/task name you see in the prompt or screenshot and confirm it matches the scaffold provided. If anything conflicts (e.g., screenshot title says "Cache With Time Limit" but the template exposes \`TimeLimitedCache\`) trust the scaffold and mention the mismatch briefly before coding.',
     'Never swap in a different known problem (e.g., TimeMap) just because it feels similar. Treat every capture as a brand-new request unless the user explicitly references prior state.',
@@ -43,7 +50,10 @@ const textModeSystemPrompt = [
     responseDiscipline,
     '',
     'Alignment workflow:',
-    alignmentWorkflow
+    alignmentWorkflow,
+    '',
+    'Transcript handling:',
+    transcriptHandling
 ].join('\n');
 
 const imageModeSystemPrompt = [
@@ -57,6 +67,7 @@ const userPrompts = {
     imageDefault: [
         'Review the screenshot(s) closely.',
         'Identify any code scaffold, function signature, or template and implement the requested logic directly inside it.',
+        'If the transcript context already contains a direct question from the interviewer, address that question before using the screenshots.',
         'If no scaffold exists, create the minimal complete solution in the shown language.',
         'Briefly note any assumption only when the screenshot text is ambiguous, then provide the final answer.'
     ].join(' ')

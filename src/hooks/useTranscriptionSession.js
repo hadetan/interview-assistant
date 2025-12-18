@@ -7,6 +7,22 @@ const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const STALL_THRESHOLD_MS = 1500;
 const STALL_WATCH_INTERVAL_MS = 1000;
 const CONTINUATION_LINGER_MS = 2500;
+const SOURCE_TYPES = {
+    SYSTEM: 'system',
+    MIC: 'mic'
+};
+export const TRANSCRIPTION_SOURCE_TYPES = SOURCE_TYPES;
+
+const createConversationId = () => {
+    try {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch (_error) {
+        // ignore inability to use crypto.randomUUID
+    }
+    return `conversation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 export function useTranscriptionSession({ isControlWindow }) {
     const [status, setStatus] = useState('Idle');
@@ -17,9 +33,8 @@ export function useTranscriptionSession({ isControlWindow }) {
 
     const sessionIdRef = useRef(null);
     const stopTranscriptionListenerRef = useRef(null);
-    const pendingMessageIdRef = useRef(null);
-    const continuationMessageIdRef = useRef(null);
-    const lastMessageUpdateTsRef = useRef(0);
+    const sessionTrackersRef = useRef(new Map());
+    const sourceSessionMapRef = useRef(new Map());
     const latencyTimerRef = useRef(null);
     const lastLatencyTsRef = useRef(0);
     const latencyLabelRef = useRef('');
@@ -28,9 +43,38 @@ export function useTranscriptionSession({ isControlWindow }) {
     const assistantListenerRef = useRef(null);
     const assistantSessionIdRef = useRef(null);
     const assistantRequestInFlightRef = useRef(false);
+    const conversationIdRef = useRef(null);
     const messagesRef = useRef([]);
     const imageDraftIdRef = useRef(null);
     const notificationTimerRef = useRef(null);
+
+    const ensureSessionTracker = useCallback((sessionId, sourceTypeHint) => {
+        if (!sessionId) {
+            return null;
+        }
+        const map = sessionTrackersRef.current;
+        let tracker = map.get(sessionId);
+        if (!tracker) {
+            tracker = {
+                sessionId,
+                sourceType: sourceTypeHint || SOURCE_TYPES.SYSTEM,
+                pendingMessageId: null,
+                continuationMessageId: null,
+                lastMessageUpdateTs: 0,
+                isStreaming: false
+            };
+            map.set(sessionId, tracker);
+        } else if (sourceTypeHint && tracker.sourceType !== sourceTypeHint) {
+            tracker.sourceType = sourceTypeHint;
+        }
+        return tracker;
+    }, []);
+
+    const updateStreamingState = useCallback(() => {
+        const trackers = Array.from(sessionTrackersRef.current.values());
+        const anyStreaming = trackers.some((tracker) => tracker.isStreaming);
+        setIsStreaming(anyStreaming);
+    }, []);
 
     const resetTranscriptionListener = useCallback(() => {
         if (typeof stopTranscriptionListenerRef.current === 'function') {
@@ -113,10 +157,38 @@ export function useTranscriptionSession({ isControlWindow }) {
         });
     }, []);
 
+    const clearConversationHistory = useCallback(() => {
+        const existingId = conversationIdRef.current;
+        if (!existingId) {
+            return;
+        }
+        conversationIdRef.current = null;
+        if (typeof electronAPI?.assistant?.clearHistory === 'function') {
+            electronAPI.assistant.clearHistory({ conversationId: existingId }).catch((error) => {
+                console.warn('Failed to clear assistant conversation history', error);
+            });
+        }
+    }, []);
+
+    const ensureConversationId = useCallback(() => {
+        if (conversationIdRef.current) {
+            return conversationIdRef.current;
+        }
+        const id = createConversationId();
+        conversationIdRef.current = id;
+        return id;
+    }, []);
+
     const clearTranscript = useCallback(() => {
-        pendingMessageIdRef.current = null;
-        continuationMessageIdRef.current = null;
-        lastMessageUpdateTsRef.current = 0;
+        clearConversationHistory();
+        sessionTrackersRef.current.forEach((tracker) => {
+            if (!tracker) {
+                return;
+            }
+            tracker.pendingMessageId = null;
+            tracker.continuationMessageId = null;
+            tracker.lastMessageUpdateTs = 0;
+        });
         setMessages([]);
         messagesRef.current = [];
         assistantSessionIdRef.current = null;
@@ -124,53 +196,149 @@ export function useTranscriptionSession({ isControlWindow }) {
         imageDraftIdRef.current = null;
         setNotification('');
         discardAssistantDraft({ discardAll: true });
-    }, [discardAssistantDraft]);
+    }, [clearConversationHistory, discardAssistantDraft]);
 
     const teardownSession = useCallback(async () => {
         resetTranscriptionListener();
-        const currentSessionId = sessionIdRef.current;
+        const sessionIds = Array.from(sessionTrackersRef.current.keys());
         sessionIdRef.current = null;
-        if (isControlWindow && currentSessionId && electronAPI?.transcription?.stopSession) {
-            try {
-                await electronAPI.transcription.stopSession(currentSessionId);
-            } catch (_error) {
-                // ignore teardown failures
-            }
+        sourceSessionMapRef.current.clear();
+        if (isControlWindow && sessionIds.length > 0 && electronAPI?.transcription?.stopSession) {
+            const stops = sessionIds.map((id) => electronAPI.transcription.stopSession(id).catch(() => {}));
+            await Promise.allSettled(stops);
         }
-        pendingMessageIdRef.current = null;
-        continuationMessageIdRef.current = null;
-        lastMessageUpdateTsRef.current = 0;
+        sessionTrackersRef.current.clear();
         setMessages([]);
         setIsStreaming(false);
         resetLatencyWatchdog();
         discardAssistantDraft({ discardAll: true });
-    }, [discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
+        clearConversationHistory();
+    }, [clearConversationHistory, discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
 
-    const getSessionId = useCallback(() => sessionIdRef.current, []);
+    const getSessionId = useCallback((sourceType = SOURCE_TYPES.SYSTEM) => {
+        if (sourceType) {
+            return sourceSessionMapRef.current.get(sourceType) || null;
+        }
+        return sessionIdRef.current;
+    }, []);
 
-    const startTranscriptionSession = useCallback(async ({ sourceName, platform }) => {
+    const isSourceStreaming = useCallback((sourceType) => {
+        if (!sourceType) {
+            return false;
+        }
+        const sessionId = sourceSessionMapRef.current.get(sourceType);
+        if (!sessionId) {
+            return false;
+        }
+        const tracker = sessionTrackersRef.current.get(sessionId);
+        return Boolean(tracker?.isStreaming);
+    }, []);
+
+    const startTranscriptionSession = useCallback(async ({ sourceName, platform, sourceType = SOURCE_TYPES.SYSTEM }) => {
         if (typeof electronAPI?.transcription?.startSession !== 'function') {
             throw new Error('Transcription start API unavailable.');
         }
-        const response = await electronAPI.transcription.startSession({ sourceName, platform });
-        sessionIdRef.current = response?.sessionId || null;
+        const response = await electronAPI.transcription.startSession({ sourceName, platform, sourceType });
+        const receivedSessionId = response?.sessionId || null;
+        if (receivedSessionId) {
+            ensureSessionTracker(receivedSessionId, sourceType);
+            sourceSessionMapRef.current.set(sourceType, receivedSessionId);
+            if (sourceType === SOURCE_TYPES.SYSTEM) {
+                sessionIdRef.current = receivedSessionId;
+            }
+        }
         return response;
-    }, []);
+    }, [ensureSessionTracker]);
 
-    const stopTranscriptionSession = useCallback(async () => {
-        if (!sessionIdRef.current || typeof electronAPI?.transcription?.stopSession !== 'function') {
+    const stopTranscriptionSession = useCallback(async ({ sourceType = SOURCE_TYPES.SYSTEM } = {}) => {
+        const targetSessionId = sourceSessionMapRef.current.get(sourceType);
+        if (!targetSessionId || typeof electronAPI?.transcription?.stopSession !== 'function') {
             return;
         }
-        const currentSessionId = sessionIdRef.current;
-        sessionIdRef.current = null;
+        if (sourceType === SOURCE_TYPES.SYSTEM && sessionIdRef.current === targetSessionId) {
+            sessionIdRef.current = null;
+        }
+        sourceSessionMapRef.current.delete(sourceType);
         try {
-            await electronAPI.transcription.stopSession(currentSessionId);
+            await electronAPI.transcription.stopSession(targetSessionId);
         } catch (_error) {
             // ignore
         }
-        resetLatencyWatchdog();
-        setIsStreaming(false);
+        if (sourceType === SOURCE_TYPES.SYSTEM) {
+            resetLatencyWatchdog();
+        }
     }, [resetLatencyWatchdog]);
+
+    const applyTranscriptUpdateForSession = useCallback((tracker, payload) => {
+        if (!tracker) {
+            return;
+        }
+        const serverText = typeof payload.text === 'string' ? payload.text : '';
+        const delta = typeof payload.delta === 'string' ? payload.delta : '';
+        const isFinal = Boolean(payload.isFinal);
+        const hasDelta = delta.length > 0;
+        const hasServerText = serverText.length > 0;
+        const now = Date.now();
+        const lastUpdateTs = tracker.lastMessageUpdateTs || 0;
+        const canContinue = lastUpdateTs > 0 && (now - lastUpdateTs) <= CONTINUATION_LINGER_MS;
+        const continuationId = canContinue ? tracker.continuationMessageId : null;
+        if (!canContinue) {
+            tracker.continuationMessageId = null;
+        }
+        if (!hasDelta && !hasServerText) {
+            return;
+        }
+        const textContext = { delta, serverText };
+        setMessages((prev) => {
+            const next = [...prev];
+            const pendingId = tracker.pendingMessageId;
+            const targetId = pendingId || continuationId;
+
+            if (!isFinal) {
+                if (targetId) {
+                    const updated = next.map((msg) => {
+                        if (msg.id !== targetId) return msg;
+                        const updatedText = resolveTranscriptText(msg.text, textContext);
+                        return { ...msg, text: updatedText, isFinal: false, sourceType: tracker.sourceType };
+                    });
+                    tracker.pendingMessageId = targetId;
+                    tracker.continuationMessageId = targetId;
+                    tracker.lastMessageUpdateTs = now;
+                    return updated;
+                }
+                const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                tracker.pendingMessageId = id;
+                tracker.continuationMessageId = id;
+                tracker.lastMessageUpdateTs = now;
+                const initialText = initialTranscriptText(textContext);
+                if (initialText) {
+                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left', sent: false, sourceType: tracker.sourceType });
+                }
+                return next;
+            }
+
+            if (targetId) {
+                tracker.pendingMessageId = null;
+                tracker.continuationMessageId = targetId;
+                tracker.lastMessageUpdateTs = now;
+                return next.map((msg) => {
+                    if (msg.id !== targetId) return msg;
+                    const finalizedText = resolveTranscriptText(msg.text, textContext);
+                    return { ...msg, text: finalizedText, isFinal: true, sourceType: tracker.sourceType };
+                });
+            }
+
+            const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            tracker.pendingMessageId = null;
+            tracker.continuationMessageId = id;
+            tracker.lastMessageUpdateTs = now;
+            const initialText = initialTranscriptText(textContext);
+            if (initialText) {
+                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left', sent: false, sourceType: tracker.sourceType });
+            }
+            return next;
+        });
+    }, []);
 
     const attachTranscriptionEvents = useCallback(() => {
         if (typeof electronAPI?.transcription?.onEvent !== 'function') {
@@ -182,154 +350,121 @@ export function useTranscriptionSession({ isControlWindow }) {
             if (!eventSessionId) {
                 return;
             }
+            if (isControlWindow && !sessionTrackersRef.current.has(eventSessionId)) {
+                return;
+            }
 
-            if (isControlWindow) {
-                if (!sessionIdRef.current || eventSessionId !== sessionIdRef.current) {
-                    return;
-                }
-            } else if (!sessionIdRef.current && payload.type === 'started') {
-                sessionIdRef.current = eventSessionId;
-            } else if (sessionIdRef.current !== eventSessionId && payload.type !== 'stopped') {
+            const tracker = ensureSessionTracker(eventSessionId, payload.sourceType);
+            if (!tracker) {
                 return;
             }
 
             switch (payload.type) {
                 case 'started':
-                    ensureLatencyWatchdog();
-                    lastLatencyTsRef.current = Date.now();
-                    latencyLabelRef.current = '';
-                    latencySuffixRef.current = '';
-                    setStatus('Streaming transcription active.');
-                    setIsStreaming(true);
-                    break;
-                case 'update': {
-                    const serverText = typeof payload.text === 'string' ? payload.text : '';
-                    const delta = typeof payload.delta === 'string' ? payload.delta : '';
-                    const isFinal = Boolean(payload.isFinal);
-                    const hasDelta = delta.length > 0;
-                    const hasServerText = serverText.length > 0;
-                    const now = Date.now();
-                    const lastUpdateTs = lastMessageUpdateTsRef.current || 0;
-                    const canContinue = lastUpdateTs > 0 && (now - lastUpdateTs) <= CONTINUATION_LINGER_MS;
-                    const continuationId = canContinue ? continuationMessageIdRef.current : null;
-                    if (!canContinue) {
-                        continuationMessageIdRef.current = null;
+                    tracker.isStreaming = true;
+                    if (payload.sourceType && !sourceSessionMapRef.current.has(payload.sourceType)) {
+                        sourceSessionMapRef.current.set(payload.sourceType, eventSessionId);
                     }
-                    if (hasDelta || hasServerText) {
-                        const textContext = { delta, serverText };
-                        setMessages((prev) => {
-                            const next = [...prev];
-                            const pendingId = pendingMessageIdRef.current;
-                            const targetId = pendingId || continuationId;
-
-                            if (!isFinal) {
-                                if (targetId) {
-                                    const updated = next.map((msg) => {
-                                        if (msg.id !== targetId) return msg;
-                                        const updatedText = resolveTranscriptText(msg.text, textContext);
-                                        return { ...msg, text: updatedText, isFinal: false };
-                                    });
-                                    pendingMessageIdRef.current = targetId;
-                                    continuationMessageIdRef.current = targetId;
-                                    lastMessageUpdateTsRef.current = now;
-                                    return updated;
-                                }
-                                const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                                pendingMessageIdRef.current = id;
-                                continuationMessageIdRef.current = id;
-                                lastMessageUpdateTsRef.current = now;
-                                const initialText = initialTranscriptText(textContext);
-                                if (initialText) {
-                                    next.push({ id, text: initialText, isFinal: false, ts: now, side: 'left', sent: false });
-                                }
-                                return next;
-                            }
-
-                            if (targetId) {
-                                pendingMessageIdRef.current = null;
-                                continuationMessageIdRef.current = targetId;
-                                lastMessageUpdateTsRef.current = now;
-                                return next.map((msg) => {
-                                    if (msg.id !== targetId) return msg;
-                                    const finalizedText = resolveTranscriptText(msg.text, textContext);
-                                    return { ...msg, text: finalizedText, isFinal: true };
-                                });
-                            }
-
-                            const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                            pendingMessageIdRef.current = null;
-                            continuationMessageIdRef.current = id;
-                            lastMessageUpdateTsRef.current = now;
-                            const initialText = initialTranscriptText(textContext);
-                            if (initialText) {
-                                next.push({ id, text: initialText, isFinal: true, ts: now, side: 'left', sent: false });
-                            }
-                            return next;
-                        });
+                    if (!isControlWindow && tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        sessionIdRef.current = eventSessionId;
                     }
-                    lastLatencyTsRef.current = Date.now();
-                    latencyLabelRef.current = `WS ${payload.latencyMs ?? '-'}ms | E2E ${payload.pipelineMs ?? '-'}ms | CONV ${payload.conversionMs ?? '-'}ms`;
-                    latencySuffixRef.current = '';
-                    latencySuffixReasonRef.current = '';
-                    ensureLatencyWatchdog();
-                    updateLatencyStatus();
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        ensureLatencyWatchdog();
+                        lastLatencyTsRef.current = Date.now();
+                        latencyLabelRef.current = '';
+                        latencySuffixRef.current = '';
+                        setStatus('Streaming transcription active.');
+                    }
+                    updateStreamingState();
                     break;
-                }
+                case 'update':
+                    applyTranscriptUpdateForSession(tracker, payload);
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        lastLatencyTsRef.current = Date.now();
+                        latencyLabelRef.current = `WS ${payload.latencyMs ?? '-'}ms | E2E ${payload.pipelineMs ?? '-'}ms | CONV ${payload.conversionMs ?? '-'}ms`;
+                        latencySuffixRef.current = '';
+                        latencySuffixReasonRef.current = '';
+                        ensureLatencyWatchdog();
+                        updateLatencyStatus();
+                    }
+                    break;
                 case 'warning':
-                    resetLatencyWatchdog();
-                    latencySuffixRef.current = '';
-                    latencySuffixReasonRef.current = '';
-                    setStatus(`Transcription warning: ${payload.warning?.message || payload.warning?.code || payload.message || 'Unknown warning'}`);
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        resetLatencyWatchdog();
+                        latencySuffixRef.current = '';
+                        latencySuffixReasonRef.current = '';
+                        setStatus(`Transcription warning: ${payload.warning?.message || payload.warning?.code || payload.message || 'Unknown warning'}`);
+                    }
                     break;
                 case 'error':
-                    resetLatencyWatchdog();
-                    latencySuffixRef.current = '';
-                    latencySuffixReasonRef.current = '';
-                    setStatus(`Transcription error: ${payload.error?.message || 'Unknown error'}`);
-                    break;
-                case 'stopped':
-                    resetLatencyWatchdog();
-                    latencySuffixRef.current = '';
-                    latencySuffixReasonRef.current = '';
-                    setStatus('Transcription session stopped.');
-                    pendingMessageIdRef.current = null;
-                    setMessages([]);
-                    setIsStreaming(false);
-                    continuationMessageIdRef.current = null;
-                    lastMessageUpdateTsRef.current = 0;
-                    if (!isControlWindow) {
-                        sessionIdRef.current = null;
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        resetLatencyWatchdog();
+                        latencySuffixRef.current = '';
+                        latencySuffixReasonRef.current = '';
+                        setStatus(`Transcription error: ${payload.error?.message || 'Unknown error'}`);
                     }
                     break;
-                case 'heartbeat': {
-                    const state = payload.state || (payload.silent ? 'silence' : 'speech');
-                    if (state === 'reconnecting') {
-                        latencySuffixRef.current = '(reconnecting…)';
-                        latencySuffixReasonRef.current = 'reconnecting';
-                    } else if (state === 'reconnected') {
-                        latencySuffixRef.current = '(reconnected)';
-                        latencySuffixReasonRef.current = 'reconnected';
-                    } else if (state === 'silence') {
-                        const duration = Math.max(0, Number(payload.silenceDurationMs) || 0);
-                        latencySuffixRef.current = formatStalledLabel(duration);
-                        latencySuffixReasonRef.current = 'heartbeat-silence';
-                    } else if (state === 'speech') {
-                        if (latencySuffixReasonRef.current === 'heartbeat-silence') {
+                case 'stopped': {
+                    tracker.pendingMessageId = null;
+                    tracker.continuationMessageId = null;
+                    tracker.lastMessageUpdateTs = 0;
+                    tracker.isStreaming = false;
+                    if (sourceSessionMapRef.current.get(tracker.sourceType) === eventSessionId) {
+                        sourceSessionMapRef.current.delete(tracker.sourceType);
+                    }
+                    sessionTrackersRef.current.delete(eventSessionId);
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        resetLatencyWatchdog();
+                        latencySuffixRef.current = '';
+                        latencySuffixReasonRef.current = '';
+                        setStatus('Transcription session stopped.');
+                        if (!isControlWindow) {
+                            sessionIdRef.current = null;
+                        }
+                    }
+                    updateStreamingState();
+                    break;
+                }
+                case 'heartbeat':
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                        const state = payload.state || (payload.silent ? 'silence' : 'speech');
+                        if (state === 'reconnecting') {
+                            latencySuffixRef.current = '(reconnecting…)';
+                            latencySuffixReasonRef.current = 'reconnecting';
+                        } else if (state === 'reconnected') {
+                            latencySuffixRef.current = '(reconnected)';
+                            latencySuffixReasonRef.current = 'reconnected';
+                        } else if (state === 'silence') {
+                            const duration = Math.max(0, Number(payload.silenceDurationMs) || 0);
+                            latencySuffixRef.current = formatStalledLabel(duration);
+                            latencySuffixReasonRef.current = 'heartbeat-silence';
+                        } else if (state === 'speech') {
+                            if (latencySuffixReasonRef.current === 'heartbeat-silence') {
+                                latencySuffixRef.current = '';
+                                latencySuffixReasonRef.current = '';
+                            }
+                        } else if (latencySuffixReasonRef.current !== 'stall') {
                             latencySuffixRef.current = '';
                             latencySuffixReasonRef.current = '';
                         }
-                    } else if (latencySuffixReasonRef.current !== 'stall') {
-                        latencySuffixRef.current = '';
-                        latencySuffixReasonRef.current = '';
+                        updateLatencyStatus();
                     }
-                    updateLatencyStatus();
                     break;
-                }
                 default:
                     break;
             }
         });
-    }, [ensureLatencyWatchdog, formatStalledLabel, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener, updateLatencyStatus]);
+    }, [
+        applyTranscriptUpdateForSession,
+        ensureLatencyWatchdog,
+        ensureSessionTracker,
+        formatStalledLabel,
+        isControlWindow,
+        resetLatencyWatchdog,
+        resetTranscriptionListener,
+        updateLatencyStatus,
+        updateStreamingState
+    ]);
 
     useEffect(() => () => {
         resetTranscriptionListener();
@@ -531,9 +666,11 @@ export function useTranscriptionSession({ isControlWindow }) {
             return { ok: false, reason: 'unavailable' };
         }
         try {
+            const conversationId = ensureConversationId();
             const response = await electronAPI.assistant.attachImage({
                 draftId: imageDraftIdRef.current,
-                image
+                image,
+                conversationId
             });
             if (!response?.ok) {
                 const message = response?.error?.message || 'Failed to attach image.';
@@ -554,7 +691,7 @@ export function useTranscriptionSession({ isControlWindow }) {
             appendAssistantNotice(`Assistant error: ${error?.message || 'Unknown error'}`);
             return { ok: false, error };
         }
-    }, [appendAssistantNotice, upsertImageBubble]);
+    }, [appendAssistantNotice, ensureConversationId, upsertImageBubble]);
 
     const requestAssistantResponse = useCallback(async () => {
         if (assistantRequestInFlightRef.current) {
@@ -571,13 +708,23 @@ export function useTranscriptionSession({ isControlWindow }) {
             return { ok: false, reason: 'no-unsent' };
         }
 
-        const payloadMessages = pendingMessages.map((msg) => ({
-            id: msg.id,
-            text: typeof msg.text === 'string' ? msg.text : '',
-            side: msg.side,
-            type: msg.type
-        }));
+        const transcriptQueue = pendingMessages.filter((msg) => msg.side === 'left');
+        const transcriptPayload = transcriptQueue
+            .map((msg) => {
+                const rawText = typeof msg.text === 'string' ? msg.text : '';
+                if (!rawText) {
+                    return null;
+                }
+                const speaker = msg.sourceType === TRANSCRIPTION_SOURCE_TYPES.MIC ? 'user' : 'interviewer';
+                return {
+                    id: msg.id,
+                    messageBy: speaker,
+                    message: rawText
+                };
+            })
+            .filter(Boolean);
 
+        const conversationId = ensureConversationId();
         assistantRequestInFlightRef.current = true;
         try {
             if (typeof electronAPI?.assistant?.finalizeDraft !== 'function') {
@@ -585,13 +732,15 @@ export function useTranscriptionSession({ isControlWindow }) {
             }
             const response = await electronAPI.assistant.finalizeDraft({
                 draftId: imageDraftIdRef.current,
-                messages: payloadMessages
+                messages: transcriptPayload,
+                conversationId
             });
-            const { sessionId, messageId, draftId } = response || {};
+            const { sessionId, messageId, draftId, conversationId: responseConversationId } = response || {};
             if (!response?.ok || !sessionId || !messageId) {
                 const message = response?.error?.message || 'Assistant response is missing identifiers.';
                 throw new Error(message);
             }
+            conversationIdRef.current = responseConversationId || conversationId;
             assistantSessionIdRef.current = sessionId;
             const now = Date.now();
             const sentIds = new Set(pendingMessages.map((msg) => msg.id));
@@ -626,7 +775,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         } finally {
             assistantRequestInFlightRef.current = false;
         }
-    }, [appendAssistantNotice]);
+    }, [appendAssistantNotice, ensureConversationId]);
 
     return useMemo(() => ({
         status,
@@ -643,6 +792,10 @@ export function useTranscriptionSession({ isControlWindow }) {
         requestAssistantResponse,
         attachImageToDraft,
         getSessionId,
+        getSessionIdForSource: getSessionId,
+        startSourceSession: startTranscriptionSession,
+        stopSourceSession: stopTranscriptionSession,
+        isSourceStreaming,
         notification
     }), [
         attachAssistantEvents,
@@ -650,6 +803,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         attachImageToDraft,
         clearTranscript,
         getSessionId,
+        isSourceStreaming,
         isStreaming,
         latencyStatus,
         notification,

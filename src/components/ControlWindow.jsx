@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { cloneElement, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecorder } from '../hooks/useRecorder';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
@@ -15,7 +15,10 @@ export default function ControlWindow({
         startTranscriptionSession,
         teardownSession,
         clearTranscript,
-        getSessionId
+        getSessionId,
+        startSourceSession,
+        stopSourceSession,
+        isSourceStreaming
     } = session;
 
     const sessionApi = useMemo(() => ({
@@ -24,17 +27,30 @@ export default function ControlWindow({
         startTranscriptionSession,
         teardownSession,
         clearTranscript,
-        getSessionId
+        getSessionId,
+        startSourceSession,
+        stopSourceSession,
+        isSourceStreaming
     }), [
         attachTranscriptionEvents,
         clearTranscript,
         getSessionId,
+        isSourceStreaming,
         setStatus,
         startTranscriptionSession,
+        startSourceSession,
+        stopSourceSession,
         teardownSession
     ]);
 
-    const { isSelectingSource, isRecording, startRecording, stopRecording } = useRecorder({
+    const {
+        isSelectingSource,
+        isRecording,
+        startRecording,
+        stopRecording,
+        toggleMic,
+        mic
+    } = useRecorder({
         chunkTimeslice,
         platform,
         preferredMimeType,
@@ -51,6 +67,47 @@ export default function ControlWindow({
     useEffect(() => {
         selectingSourceRef.current = isSelectingSource;
     }, [isSelectingSource]);
+
+    const micButtonLabel = useMemo(() => {
+        if (mic.isPending) {
+            if (mic.pendingAction === 'stopping') {
+                return 'Stopping Mic…';
+            }
+            return 'Starting Mic…';
+        }
+        if (!mic.isReady) {
+            return 'Mic';
+        }
+        return mic.isActive ? 'Stop Mic' : 'Start Mic';
+    }, [isRecording, mic]);
+
+    const isMicButtonDisabled = useMemo(() => {
+        if (!isRecording) {
+            return true;
+        }
+        if (mic.isPending) {
+            return true;
+        }
+        return !mic.isReady;
+    }, [isRecording, mic]);
+
+    useMemo(() => {
+        if (mic.error) {
+            console.error(mic.error);
+        }
+        return '';
+    }, [mic]);
+
+    const handleMicToggle = useCallback(async () => {
+        if (isMicButtonDisabled) {
+            return;
+        }
+        try {
+            await toggleMic();
+        } catch (error) {
+            console.error('Failed to toggle microphone capture', error);
+        }
+    }, [isMicButtonDisabled, toggleMic]);
 
     useEffect(() => {
         const registerToggle = electronAPI?.controlWindow?.onToggleCapture;
@@ -111,6 +168,14 @@ export default function ControlWindow({
                     onClick={stopRecording}
                 >
                     Stop
+                </button>
+                <button
+                    className={`control-button control-mic${mic.isActive ? ' control-mic-active' : ''}`}
+                    type="button"
+                    disabled={isMicButtonDisabled}
+                    onClick={handleMicToggle}
+                >
+                    {micButtonLabel}
                 </button>
             </div>
         </div>

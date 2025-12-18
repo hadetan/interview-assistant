@@ -55,7 +55,8 @@ class StreamingTranscriptionService extends EventEmitter {
         const client = this.createClient();
         const session = new LiveStreamingSession({
             sessionId,
-            sourceName: metadata.sourceName || 'unknown-source',
+            sourceName: metadata.sourceName,
+            sourceType: metadata.sourceType,
             client,
             streamingConfig: this.config.streaming,
             ffmpegPath: metadata.ffmpegPath || this.ffmpegPath,
@@ -70,6 +71,7 @@ class StreamingTranscriptionService extends EventEmitter {
             this.emit('session-update', {
                 sessionId,
                 sourceName: session.sourceName,
+                sourceType: session.sourceType,
                 ...payload
             });
         });
@@ -78,6 +80,7 @@ class StreamingTranscriptionService extends EventEmitter {
             log('error', `Session ${sessionId} error: ${error.message}`);
             this.emit('session-error', {
                 sessionId,
+                sourceType: session.sourceType,
                 error: {
                     message: error?.message || 'Streaming transcription failed',
                     name: error?.name || 'Error'
@@ -90,6 +93,7 @@ class StreamingTranscriptionService extends EventEmitter {
             this.emit('session-warning', {
                 sessionId,
                 sourceName: session.sourceName,
+                sourceType: session.sourceType,
                 warning: payload
             });
         });
@@ -98,6 +102,7 @@ class StreamingTranscriptionService extends EventEmitter {
             this.emit('session-heartbeat', {
                 sessionId,
                 sourceName: session.sourceName,
+                sourceType: session.sourceType,
                 ...payload
             });
         });
@@ -108,7 +113,7 @@ class StreamingTranscriptionService extends EventEmitter {
         try {
             await session.start();
             log('info', `Session ${sessionId} started for ${session.sourceName}`);
-            this.emit('session-started', { sessionId, sourceName: session.sourceName });
+            this.emit('session-started', { sessionId, sourceName: session.sourceName, sourceType: session.sourceType });
         } catch (error) {
             this.sessions.delete(sessionId);
             throw error;
@@ -134,7 +139,7 @@ class StreamingTranscriptionService extends EventEmitter {
         await session.stop();
         this.sessions.delete(sessionId);
         log('info', `Session ${sessionId} stopped`);
-        this.emit('session-stopped', { sessionId });
+        this.emit('session-stopped', { sessionId, sourceType: session?.sourceType });
     }
 
     async stopAllSessions() {
