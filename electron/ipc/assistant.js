@@ -50,8 +50,11 @@ const registerAssistantHandlers = ({
             throw new Error('Unable to determine window for assistant request.');
         }
         const text = typeof payload.text === 'string' ? payload.text : '';
+        const conversationId = typeof payload.conversationId === 'string' && payload.conversationId.length > 0
+            ? payload.conversationId
+            : undefined;
         const sessionId = randomUUID();
-        const response = await service.sendMessage({ sessionId, text });
+        const response = await service.sendMessage({ sessionId, text, conversationId });
         windowMap.set(sessionId, senderWindow.id);
         if (typeof senderWindow.once === 'function') {
             senderWindow.once('closed', () => {
@@ -86,7 +89,8 @@ const registerAssistantHandlers = ({
         try {
             const result = await service.attachImage({
                 draftId: payload.draftId,
-                image: payload.image
+                image: payload.image,
+                conversationId: payload.conversationId
             });
             return { ok: true, ...result };
         } catch (error) {
@@ -114,7 +118,8 @@ const registerAssistantHandlers = ({
             const response = await service.finalizeDraft({
                 draftId: payload.draftId,
                 messages: Array.isArray(payload.messages) ? payload.messages : [],
-                codeOnly: Boolean(payload.codeOnly)
+                codeOnly: Boolean(payload.codeOnly),
+                conversationId: typeof payload.conversationId === 'string' ? payload.conversationId : undefined
             });
             windowMap.set(response.sessionId, senderWindow.id);
             if (typeof senderWindow.once === 'function') {
@@ -159,18 +164,53 @@ const registerAssistantHandlers = ({
         }
     };
 
+    const handleClearHistory = async (_event, payload = {}) => {
+        const availability = await ensureAvailable();
+        if (!availability.ok) {
+            return availability;
+        }
+        const targetConversationId = typeof payload.conversationId === 'string' ? payload.conversationId : '';
+        if (!targetConversationId) {
+            return {
+                ok: false,
+                error: {
+                    code: 'assistant-missing-conversation-id',
+                    message: 'Conversation identifier is required to clear history.'
+                }
+            };
+        }
+        const service = availability.service;
+        try {
+            const result = await service.clearConversation({
+                conversationId: targetConversationId,
+                discardDrafts: payload.discardDrafts !== false
+            });
+            return { ok: true, ...result };
+        } catch (error) {
+            return {
+                ok: false,
+                error: {
+                    code: 'assistant-clear-history-failed',
+                    message: error?.message || 'Failed to clear assistant conversation history.'
+                }
+            };
+        }
+    };
+
     ipcMain.handle('assistant:send', handleSend);
     ipcMain.handle('assistant:stop', handleStop);
     ipcMain.handle('assistant:attach-image', handleAttachImage);
     ipcMain.handle('assistant:finalize-draft', handleFinalizeDraft);
     ipcMain.handle('assistant:discard-draft', handleDiscardDraft);
+    ipcMain.handle('assistant:clear-history', handleClearHistory);
 
     return {
         handleSend,
         handleStop,
         handleAttachImage,
         handleFinalizeDraft,
-        handleDiscardDraft
+        handleDiscardDraft,
+        handleClearHistory
     };
 };
 

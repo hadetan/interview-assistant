@@ -13,6 +13,17 @@ const SOURCE_TYPES = {
 };
 export const TRANSCRIPTION_SOURCE_TYPES = SOURCE_TYPES;
 
+const createConversationId = () => {
+    try {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch (_error) {
+        // ignore inability to use crypto.randomUUID
+    }
+    return `conversation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 export function useTranscriptionSession({ isControlWindow }) {
     const [status, setStatus] = useState('Idle');
     const [messages, setMessages] = useState([]);
@@ -32,6 +43,7 @@ export function useTranscriptionSession({ isControlWindow }) {
     const assistantListenerRef = useRef(null);
     const assistantSessionIdRef = useRef(null);
     const assistantRequestInFlightRef = useRef(false);
+    const conversationIdRef = useRef(null);
     const messagesRef = useRef([]);
     const imageDraftIdRef = useRef(null);
     const notificationTimerRef = useRef(null);
@@ -145,7 +157,30 @@ export function useTranscriptionSession({ isControlWindow }) {
         });
     }, []);
 
+    const clearConversationHistory = useCallback(() => {
+        const existingId = conversationIdRef.current;
+        if (!existingId) {
+            return;
+        }
+        conversationIdRef.current = null;
+        if (typeof electronAPI?.assistant?.clearHistory === 'function') {
+            electronAPI.assistant.clearHistory({ conversationId: existingId }).catch((error) => {
+                console.warn('Failed to clear assistant conversation history', error);
+            });
+        }
+    }, []);
+
+    const ensureConversationId = useCallback(() => {
+        if (conversationIdRef.current) {
+            return conversationIdRef.current;
+        }
+        const id = createConversationId();
+        conversationIdRef.current = id;
+        return id;
+    }, []);
+
     const clearTranscript = useCallback(() => {
+        clearConversationHistory();
         sessionTrackersRef.current.forEach((tracker) => {
             if (!tracker) {
                 return;
@@ -161,7 +196,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         imageDraftIdRef.current = null;
         setNotification('');
         discardAssistantDraft({ discardAll: true });
-    }, [discardAssistantDraft]);
+    }, [clearConversationHistory, discardAssistantDraft]);
 
     const teardownSession = useCallback(async () => {
         resetTranscriptionListener();
@@ -177,7 +212,8 @@ export function useTranscriptionSession({ isControlWindow }) {
         setIsStreaming(false);
         resetLatencyWatchdog();
         discardAssistantDraft({ discardAll: true });
-    }, [discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
+        clearConversationHistory();
+    }, [clearConversationHistory, discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
 
     const getSessionId = useCallback((sourceType = SOURCE_TYPES.SYSTEM) => {
         if (sourceType) {
@@ -630,9 +666,11 @@ export function useTranscriptionSession({ isControlWindow }) {
             return { ok: false, reason: 'unavailable' };
         }
         try {
+            const conversationId = ensureConversationId();
             const response = await electronAPI.assistant.attachImage({
                 draftId: imageDraftIdRef.current,
-                image
+                image,
+                conversationId
             });
             if (!response?.ok) {
                 const message = response?.error?.message || 'Failed to attach image.';
@@ -653,7 +691,7 @@ export function useTranscriptionSession({ isControlWindow }) {
             appendAssistantNotice(`Assistant error: ${error?.message || 'Unknown error'}`);
             return { ok: false, error };
         }
-    }, [appendAssistantNotice, upsertImageBubble]);
+    }, [appendAssistantNotice, ensureConversationId, upsertImageBubble]);
 
     const requestAssistantResponse = useCallback(async () => {
         if (assistantRequestInFlightRef.current) {
@@ -686,6 +724,7 @@ export function useTranscriptionSession({ isControlWindow }) {
             })
             .filter(Boolean);
 
+        const conversationId = ensureConversationId();
         assistantRequestInFlightRef.current = true;
         try {
             if (typeof electronAPI?.assistant?.finalizeDraft !== 'function') {
@@ -693,13 +732,15 @@ export function useTranscriptionSession({ isControlWindow }) {
             }
             const response = await electronAPI.assistant.finalizeDraft({
                 draftId: imageDraftIdRef.current,
-                messages: transcriptPayload
+                messages: transcriptPayload,
+                conversationId
             });
-            const { sessionId, messageId, draftId } = response || {};
+            const { sessionId, messageId, draftId, conversationId: responseConversationId } = response || {};
             if (!response?.ok || !sessionId || !messageId) {
                 const message = response?.error?.message || 'Assistant response is missing identifiers.';
                 throw new Error(message);
             }
+            conversationIdRef.current = responseConversationId || conversationId;
             assistantSessionIdRef.current = sessionId;
             const now = Date.now();
             const sentIds = new Set(pendingMessages.map((msg) => msg.id));
@@ -734,7 +775,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         } finally {
             assistantRequestInFlightRef.current = false;
         }
-    }, [appendAssistantNotice]);
+    }, [appendAssistantNotice, ensureConversationId]);
 
     return useMemo(() => ({
         status,
