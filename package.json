@@ -28,6 +28,10 @@
       "tools/**",
       "package.json"
     ],
+    "asarUnpack": [
+      "node_modules/@ffmpeg-installer/**",
+      "node_modules/@echogarden/**"
+    ],
     "directories": {
       "buildResources": "tools"
     },

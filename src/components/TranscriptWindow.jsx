@@ -70,7 +70,7 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
     }, [attachImageToDraft, handleClear, requestAssistantResponse, scrollBy]);
 
     return (
-        <div className="transcript-shell" style={messages.length === 0 ? {visibility: 'hidden'} : {visibility: 'visible'}}>
+        <div className="transcript-shell" >
             <section className="transcript-panel" aria-live="polite">
                 <header className="transcript-heading">
                     <span className={`state-dot ${isStreaming ? 'state-dot-live' : ''}`} aria-hidden="true" />
