@@ -160,7 +160,7 @@ const initializeApp = async () => {
         }
     });
 
-    const clearTranscriptShortcut = 'CommandOrControl+Alt+G';
+    const clearTranscriptShortcut = 'CommandOrControl+Shift+G';
     shortcutManager.registerShortcut(clearTranscriptShortcut, () => {
         const transcriptWindow = getTranscriptWindow();
         if (transcriptWindow && !transcriptWindow.isDestroyed()) {
@@ -168,11 +168,19 @@ const initializeApp = async () => {
         }
     });
 
+    const toggleMicShortcut = 'CommandOrControl+Shift+M';
+    shortcutManager.registerShortcut(toggleMicShortcut, () => {
+        const controlWindow = getControlWindow();
+        if (controlWindow && !controlWindow.isDestroyed()) {
+            controlWindow.webContents.send('control-window:toggle-mic');
+        }
+    });
+
     const assistantEnabled = assistantConfig?.isEnabled !== false;
     let attachImageShortcut = null;
 
     if (assistantEnabled) {
-        const assistantShortcut = 'CommandOrControl+Shift+Alt+Enter';
+        const assistantShortcut = 'CommandOrControl+Enter';
         shortcutManager.registerShortcut(assistantShortcut, () => {
             const transcriptWindow = getTranscriptWindow();
             if (transcriptWindow && !transcriptWindow.isDestroyed()) {
@@ -180,7 +188,7 @@ const initializeApp = async () => {
             }
         });
 
-        attachImageShortcut = 'CommandOrControl+Alt+H';
+        attachImageShortcut = 'CommandOrControl+Shift+H';
         shortcutManager.registerShortcut(attachImageShortcut, async () => {
             const transcriptWindow = getTranscriptWindow();
             if (!transcriptWindow || transcriptWindow.isDestroyed()) {
@@ -246,7 +254,10 @@ const initializeApp = async () => {
                 }
             });
 
-            shortcutManager.unregisterAllShortcutsExcept(new Set([visibilityToggleShortcut, attachImageShortcut]));
+            const allowedShortcuts = new Set(
+                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut].filter(Boolean)
+            );
+            shortcutManager.unregisterAllShortcutsExcept(allowedShortcuts);
             return;
         }
 

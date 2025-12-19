@@ -133,6 +133,21 @@ export default function ControlWindow({
     }, [startRecording, stopRecording]);
 
     useEffect(() => {
+        const registerMicToggle = electronAPI?.controlWindow?.onToggleMic;
+        if (typeof registerMicToggle !== 'function') {
+            return () => {};
+        }
+        const unsubscribe = registerMicToggle(() => {
+            handleMicToggle();
+        });
+        return () => {
+            if (typeof unsubscribe === 'function') {
+                unsubscribe();
+            }
+        };
+    }, [handleMicToggle]);
+
+    useEffect(() => {
         if (typeof window === 'undefined') {
             return () => {};
         }
