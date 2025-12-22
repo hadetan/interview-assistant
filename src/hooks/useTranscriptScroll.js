@@ -1,53 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+const BOTTOM_EPSILON = 2;
+
 export function useTranscriptScroll({ messages, autoScroll = true }) {
     const transcriptRef = useRef(null);
-    const animationFrameRef = useRef(null);
+    const rafIdRef = useRef(null);
+    const rafBaselineRef = useRef(0);
     const [isAtBottom, setIsAtBottom] = useState(true);
-
-    const cancelScrollAnimation = useCallback(() => {
-        if (animationFrameRef.current) {
-            window.cancelAnimationFrame(animationFrameRef.current);
-            animationFrameRef.current = null;
-        }
-    }, []);
-
-    const animateScrollTo = useCallback((targetTop) => {
-        const el = transcriptRef.current;
-        if (!el) {
-            return;
-        }
-
-        cancelScrollAnimation();
-
-        const startTop = el.scrollTop;
-        const distance = targetTop - startTop;
-        if (distance === 0) {
-            setIsAtBottom(targetTop >= Math.max(0, el.scrollHeight - el.clientHeight) - 2);
-            return;
-        }
-
-        const durationMs = 150;
-        const startTime = performance.now();
-
-        const step = (now) => {
-            const elapsed = now - startTime;
-            const progress = Math.min(1, elapsed / durationMs);
-            const easeOut = 1 - Math.pow(1 - progress, 3);
-            el.scrollTop = startTop + distance * easeOut;
-
-            if (progress < 1) {
-                animationFrameRef.current = window.requestAnimationFrame(step);
-            } else {
-                animationFrameRef.current = null;
-                const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-                const atBottom = el.scrollTop >= maxScrollTop - 2;
-                setIsAtBottom(atBottom);
-            }
-        };
-
-        animationFrameRef.current = window.requestAnimationFrame(step);
-    }, [cancelScrollAnimation]);
 
     const scrollToBottom = useCallback(() => {
         const el = transcriptRef.current;
@@ -65,20 +24,19 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
         }
         const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
         const nextTop = Math.min(maxScrollTop, Math.max(0, el.scrollTop + delta));
-        animateScrollTo(nextTop);
-        const atBottom = nextTop >= maxScrollTop - 2;
+        el.scrollTop = nextTop;
+        const atBottom = Math.abs(maxScrollTop - nextTop) <= BOTTOM_EPSILON;
         setIsAtBottom(atBottom);
-    }, [animateScrollTo]);
+    }, []);
 
     const resetScroll = useCallback(() => {
         const el = transcriptRef.current;
         if (!el) {
             return;
         }
-        cancelScrollAnimation();
         el.scrollTop = 0;
         setIsAtBottom(true);
-    }, [cancelScrollAnimation]);
+    }, []);
 
     useEffect(() => {
         const el = transcriptRef.current;
@@ -86,7 +44,8 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
             return () => {};
         }
         const handleScroll = () => {
-            const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+            const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+            const atBottom = Math.abs(maxScrollTop - el.scrollTop) <= BOTTOM_EPSILON;
             setIsAtBottom(atBottom);
         };
         handleScroll();
@@ -98,13 +57,40 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
 
     useEffect(() => {
         if (!autoScroll || !isAtBottom) {
+            if (rafIdRef.current !== null) {
+                window.cancelAnimationFrame(rafIdRef.current);
+                rafIdRef.current = null;
+            }
             return;
         }
-        const id = window.requestAnimationFrame(scrollToBottom);
-        return () => window.cancelAnimationFrame(id);
+        const el = transcriptRef.current;
+        if (!el) {
+            return () => {};
+        }
+        if (rafIdRef.current !== null) {
+            window.cancelAnimationFrame(rafIdRef.current);
+            rafIdRef.current = null;
+        }
+        rafBaselineRef.current = el.scrollTop;
+        rafIdRef.current = window.requestAnimationFrame(() => {
+            rafIdRef.current = null;
+            const current = transcriptRef.current;
+            if (!current) {
+                return;
+            }
+            const userMoved = Math.abs(current.scrollTop - rafBaselineRef.current) > BOTTOM_EPSILON;
+            if (userMoved) {
+                return;
+            }
+            scrollToBottom();
+        });
+        return () => {
+            if (rafIdRef.current !== null) {
+                window.cancelAnimationFrame(rafIdRef.current);
+                rafIdRef.current = null;
+            }
+        };
     }, [autoScroll, isAtBottom, messages, scrollToBottom]);
-
-    useEffect(() => () => cancelScrollAnimation(), [cancelScrollAnimation]);
 
     return {
         transcriptRef,

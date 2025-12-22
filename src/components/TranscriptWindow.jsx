@@ -3,7 +3,7 @@ import ChatBubble from './ChatBubble';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
-const SCROLL_STEP_PX = 140;
+const SCROLL_STEP_PX = 280;
 
 export default function TranscriptWindow({ session, chunkTimeslice }) {
     const {
