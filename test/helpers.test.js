@@ -7,7 +7,7 @@ const {
     analyzePcmChunk,
     computeChunkDurationMs,
     computeLatencyBreakdown
-} = require('../ai/transcription/streaming/helpers');
+} = require('../server/ai/transcription/streaming/helpers');
 
 test('clampNumber clamps and handles non-numeric', () => {
     assert.equal(clampNumber(5, 0, 10), 5);

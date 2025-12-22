@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const assistantModulePromise = import('../src/utils/assistantMessage.js');
 const attachmentModulePromise = import('../src/utils/attachmentPreview.js');
-const { AssistantService } = require('../ai/assistant/assistant-service');
+const { AssistantService } = require('../server/ai/assistant/assistant-service');
 
 class FakeProvider extends EventEmitter {
     constructor() {

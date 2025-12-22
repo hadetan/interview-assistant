@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createWindowManager, clampOverlaysWithinArea } = require('../electron/window-manager');
+const { createWindowManager, clampOverlaysWithinArea } = require('../server/electron/window-manager');
 
 class FakeBrowserWindow {
     static nextId = 1;

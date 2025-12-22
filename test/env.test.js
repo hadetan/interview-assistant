@@ -7,7 +7,7 @@ const {
     hasArgFlag,
     offModeActive,
     shouldDisableContentProtection
-} = require('../electron/env');
+} = require('../server/electron/env');
 
 test('parseArgvFlags normalizes and trims argv', () => {
     const flags = parseArgvFlags([' --No-Content-Protection ', 'Off', 'FOO', undefined, null]);

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { registerTranscriptionHandlers, normalizeChunkBuffer } = require('../electron/ipc/transcription');
+const { registerTranscriptionHandlers, normalizeChunkBuffer } = require('../server/electron/ipc/transcription');
 
 test('normalizeChunkBuffer handles ArrayBuffer and views', () => {
     const arr = new Uint8Array([1, 2, 3]);

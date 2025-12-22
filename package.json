@@ -2,7 +2,7 @@
   "name": "poc-screen-and-audio-capture",
   "version": "1.0.0",
   "description": "Screen and audio capture recorder.",
-  "main": "electron/main.js",
+  "main": "server/electron/main.js",
   "scripts": {
     "dev": "concurrently \"npm:build:renderer\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
@@ -19,12 +19,12 @@
   "build": {
     "appId": "com.example.screenaudiocapture",
     "files": [
-      "electron/**",
+      "server/electron/**",
       "dist/renderer/**",
-      "config/**",
-      "ai/assistant/**",
-      "ai/transcription/**",
-      "utils/**",
+      "server/config/**",
+      "server/ai/assistant/**",
+      "server/ai/transcription/**",
+      "server/utils/**",
       "tools/**",
       "package.json"
     ],

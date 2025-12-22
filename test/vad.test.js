@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { LiveStreamingSession } = require('../ai/transcription/streaming/live-session');
+const { LiveStreamingSession } = require('../server/ai/transcription/streaming/live-session');
 
 
 test('LiveStreamingSession respects VAD decisions when forwarding PCM', () => {

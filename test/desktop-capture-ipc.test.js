@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { registerDesktopCaptureHandler } = require('../electron/ipc/desktop-capture');
+const { registerDesktopCaptureHandler } = require('../server/electron/ipc/desktop-capture');
 
 test('registerDesktopCaptureHandler maps sources with defaults', async () => {
     const registered = {};

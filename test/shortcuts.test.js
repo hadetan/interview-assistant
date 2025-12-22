@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createShortcutManager } = require('../electron/shortcuts');
+const { createShortcutManager } = require('../server/electron/shortcuts');
 
 test('shortcut manager registers and unregisters accelerators', () => {
     const registry = new Set();

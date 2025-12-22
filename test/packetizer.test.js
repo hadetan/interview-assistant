@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildChunkMeta } = require('../ai/transcription/streaming/packetizer');
+const { buildChunkMeta } = require('../server/ai/transcription/streaming/packetizer');
 
 test('buildChunkMeta clones and fills defaults', () => {
     const meta = buildChunkMeta(null, 5, 1234);
