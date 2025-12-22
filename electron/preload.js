@@ -61,6 +61,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
             ipcRenderer.on('control-window:toggle-mic', listener);
             return () => ipcRenderer.removeListener('control-window:toggle-mic', listener);
         },
+        onToggleGuide: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = () => callback();
+            ipcRenderer.on('control-window:toggle-guide', listener);
+            return () => ipcRenderer.removeListener('control-window:toggle-guide', listener);
+        },
         onScrollUp: (callback) => {
             if (typeof callback !== 'function') {
                 return () => {};

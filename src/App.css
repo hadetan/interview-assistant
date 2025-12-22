@@ -168,27 +168,189 @@ body {
     display: none;
 }
 
-.transcript-meta {
-    margin-top: 0.9rem;
-    font-size: 0.8rem;
-    color: rgba(184, 199, 220, 0.9);
-    letter-spacing: 0.08em;
+.transcript-guide {
+    margin-top: 0.75rem;
+    padding: 0.65rem 0.85rem;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.52));
+    border: 1px solid rgba(51, 65, 85, 0.65);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.transcript-guide-collapsed {
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    padding: 0.4rem 0.6rem;
+    gap: 0.4rem;
+}
+
+.guide-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.guide-title {
+    margin: 0;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.95);
+}
+
+.guide-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.16rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.55);
+    background: rgba(30, 41, 59, 0.65);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.9);
+}
+
+.guide-grid {
     display: flex;
     justify-content: space-evenly;
-    align-items: center;
 }
 
-.transcript-meta #left {
-    display: flex;
-    flex-direction: column;
+.guide-action {
+    display: inline-flex;
     align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    background: rgba(30, 41, 59, 0.55);
+    color: rgba(226, 232, 240, 0.92);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 120ms ease, transform 120ms ease;
 }
 
-.transcript-meta #right {
+.guide-action:hover {
+    background: rgba(59, 130, 246, 0.18);
+    transform: translateY(-1px);
+}
+
+.guide-action-shortcut {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.guide-card {
+    background: rgba(5, 11, 23, 0.6);
+    border: 1px solid rgba(71, 85, 105, 0.55);
+    border-radius: 14px;
+    padding: 0.55rem 0.65rem;
     display: flex;
     flex-direction: column;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.guide-card-head {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.guide-card-title {
+    margin: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.95);
+}
+
+.guide-card-hint {
+    margin: 0;
+    font-size: 0.68rem;
+    color: rgba(148, 163, 184, 0.75);
+    letter-spacing: 0.015em;
+}
+
+.guide-card-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.guide-shortcut {
+    display: flex;
+    justify-content: space-between;
     align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 5px;
+}
+
+.guide-shortcut-label {
+    font-size: 0.72rem;
+    color: rgba(203, 213, 225, 0.93);
+    letter-spacing: 0.02em;
+}
+
+.guide-shortcut-keys {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.guide-shortcut-keys kbd {
+    margin: 0;
+    padding: 0.2rem 0.4rem;
+    border-radius: 5px;
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(100, 116, 139, 0.6);
+    font-size: 0.64rem;
+    font-family: inherit;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.95);
+    box-shadow: inset 0 -2px 0 rgba(15, 23, 42, 0.85);
+}
+
+.guide-shortcut-keys kbd + kbd::before {
+    content: '+';
+    margin-right: 0.28rem;
+    color: rgba(100, 116, 139, 0.82);
+}
+
+.guide-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(148, 163, 184, 0.85);
+}
+
+.guide-hint-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.guide-hint-keys kbd {
+    font-size: 0.62rem;
 }
 
 .chat-container {
@@ -309,5 +471,21 @@ body {
     .transcript-body {
         max-height: 70vh;
         overflow-y: scroll;
+    }
+
+    .guide-grid {
+        grid-template-columns: 1fr;
+        gap: 0.5rem;
+    }
+
+    .guide-shortcut {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.3rem;
+    }
+
+    .transcript-guide-collapsed {
+        padding: 0.35rem 0.5rem;
+        gap: 0.3rem;
     }
 }

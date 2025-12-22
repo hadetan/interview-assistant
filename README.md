@@ -23,6 +23,7 @@ npm run dev
 ```
 
 ## Controls supported
+- `CTRL + H`: Toggle help guide
 - `CTRL + SHIFT + /`: Start or Pause the streaming
 - `CTRL + SHIFT + [up/down]` arrow: Scroll up or down on conversation
 - `CTRL + SHIFT + G`: Clear conversation

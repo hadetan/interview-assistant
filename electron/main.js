@@ -216,6 +216,15 @@ const initializeApp = async () => {
         });
     }
 
+    /* Reveal or hide the transcript shortcut guide */
+    const toggleGuideShortcut = 'CommandOrControl+H';
+    shortcutManager.registerShortcut(toggleGuideShortcut, () => {
+        const transcriptWindow = getTranscriptWindow();
+        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+            transcriptWindow.webContents.send('control-window:toggle-guide');
+        }
+    });
+
     /* Control apps position */
     const moveLeft = 'CommandOrControl+Left';
     shortcutManager.registerShortcut(moveLeft, () => moveOverlaysBy(-moveStepPx, 0));
@@ -261,7 +270,8 @@ const initializeApp = async () => {
             });
 
             const allowedShortcuts = new Set(
-                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut].filter(Boolean)
+                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut]
+                    .filter(Boolean)
             );
             shortcutManager.unregisterAllShortcutsExcept(allowedShortcuts);
             return;
