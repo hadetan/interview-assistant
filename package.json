@@ -45,7 +45,7 @@
       }
     ],
     "mac": {
-      "icon": "windows.png",
+      "icon": "blank.png",
       "target": [
         "dmg"
       ],
