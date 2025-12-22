@@ -61,9 +61,9 @@ const resolveWorkArea = (screen, bounds) => {
     return { x, y, width, height };
 };
 
-const loadBlankNativeImage = ({ nativeImage, pathModule, fsModule }) => {
+const loadBlankNativeImage = ({ nativeImage, pathModule, fsModule, projectRoot }) => {
     try {
-        const blankIconPath = pathModule.join(__dirname, '..', 'tools', 'blank.png');
+        const blankIconPath = pathModule.join(projectRoot, 'tools', 'blank.png');
         if (fsModule.existsSync(blankIconPath)) {
             return nativeImage.createFromPath(blankIconPath);
         }
@@ -85,6 +85,7 @@ const createWindowManager = ({
     moveStepPx = 50,
     app
 }) => {
+    const projectRoot = pathModule.join(__dirname, '..', '..');
     const overlayWebPreferences = {
         preload: pathModule.join(__dirname, 'preload.js'),
         contextIsolation: true,
@@ -92,7 +93,7 @@ const createWindowManager = ({
         sandbox: false
     };
 
-    const blankNativeImage = loadBlankNativeImage({ nativeImage, pathModule, fsModule });
+    const blankNativeImage = loadBlankNativeImage({ nativeImage, pathModule, fsModule, projectRoot });
 
     let controlWindow = null;
     let transcriptWindow = null;
@@ -167,11 +168,11 @@ const createWindowManager = ({
     };
 
     const resolveRendererEntry = () => {
-        const distEntry = pathModule.join(__dirname, '..', 'dist', 'renderer', 'index.html');
+        const distEntry = pathModule.join(projectRoot, 'dist', 'renderer', 'index.html');
         if (fsModule.existsSync(distEntry)) {
             return distEntry;
         }
-        return pathModule.join(__dirname, '..', 'src', 'index.html');
+        return pathModule.join(projectRoot, 'src', 'index.html');
     };
 
     const loadRendererForWindow = (targetWindow, windowVariant) => {
