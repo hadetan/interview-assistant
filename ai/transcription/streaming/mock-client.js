@@ -41,6 +41,14 @@ class MockStreamingClient extends EventEmitter {
     isReady() {
         return this.connected;
     }
+
+    sendKeepalive() {
+        if (!this.connected) {
+            return false;
+        }
+        this.emit('keepalive', { timestamp: Date.now() });
+        return true;
+    }
 }
 
 module.exports = {

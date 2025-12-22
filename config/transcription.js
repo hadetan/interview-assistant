@@ -66,24 +66,20 @@ module.exports = function loadTranscriptionConfig() {
         streaming: {
             maxChunkBytes: 128 * 1024,
             maxPendingChunkMs: 80,
-            silenceFillMs: 120,
-            silenceFrameMs: 60,
             heartbeatIntervalMs: 250,
             silenceNotifyMs: 600,
             silenceSuppressMs: 900,
             silenceEnergyThreshold: 350,
-            silenceFailureThreshold: 5,
-            silenceBackoffMs: 10000,
             reconnectBackoffMs: 750,
             maxReconnectAttempts: 6,
+            socketKeepaliveMs: 0,
             vad: {
                 enabled: true,
                 frameMs: 30,
                 aggressiveness: clamp(2, 0, 3),
                 minSpeechRatio: clamp(0.2, 0.01, 1),
                 speechHoldMs: 300,
-                silenceHoldMs: 200,
-                fillerHoldMs: 600
+                silenceHoldMs: 200
             },
             assemblyParams
         }

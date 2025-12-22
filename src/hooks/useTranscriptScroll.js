@@ -17,17 +17,36 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
         el.scrollTo({ top: maxScrollTop, behavior: 'auto' });
     }, []);
 
+    const cancelPendingAutoScroll = useCallback(() => {
+        if (rafIdRef.current !== null) {
+            window.cancelAnimationFrame(rafIdRef.current);
+            rafIdRef.current = null;
+        }
+    }, []);
+
     const scrollBy = useCallback((delta) => {
         const el = transcriptRef.current;
         if (!el) {
             return;
         }
+        cancelPendingAutoScroll();
         const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
         const nextTop = Math.min(maxScrollTop, Math.max(0, el.scrollTop + delta));
+        const previousBehavior = el.style.scrollBehavior;
+        if (previousBehavior !== 'auto') {
+            el.style.scrollBehavior = 'auto';
+        }
         el.scrollTop = nextTop;
+        if (previousBehavior !== 'auto') {
+            if (previousBehavior) {
+                el.style.scrollBehavior = previousBehavior;
+            } else {
+                el.style.removeProperty('scroll-behavior');
+            }
+        }
         const atBottom = Math.abs(maxScrollTop - nextTop) <= BOTTOM_EPSILON;
         setIsAtBottom(atBottom);
-    }, []);
+    }, [cancelPendingAutoScroll]);
 
     const resetScroll = useCallback(() => {
         const el = transcriptRef.current;
@@ -57,20 +76,14 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
 
     useEffect(() => {
         if (!autoScroll || !isAtBottom) {
-            if (rafIdRef.current !== null) {
-                window.cancelAnimationFrame(rafIdRef.current);
-                rafIdRef.current = null;
-            }
+            cancelPendingAutoScroll();
             return;
         }
         const el = transcriptRef.current;
         if (!el) {
             return () => {};
         }
-        if (rafIdRef.current !== null) {
-            window.cancelAnimationFrame(rafIdRef.current);
-            rafIdRef.current = null;
-        }
+        cancelPendingAutoScroll();
         rafBaselineRef.current = el.scrollTop;
         rafIdRef.current = window.requestAnimationFrame(() => {
             rafIdRef.current = null;
@@ -85,12 +98,9 @@ export function useTranscriptScroll({ messages, autoScroll = true }) {
             scrollToBottom();
         });
         return () => {
-            if (rafIdRef.current !== null) {
-                window.cancelAnimationFrame(rafIdRef.current);
-                rafIdRef.current = null;
-            }
+            cancelPendingAutoScroll();
         };
-    }, [autoScroll, isAtBottom, messages, scrollToBottom]);
+    }, [autoScroll, cancelPendingAutoScroll, isAtBottom, messages, scrollToBottom]);
 
     return {
         transcriptRef,

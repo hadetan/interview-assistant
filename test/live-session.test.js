@@ -34,7 +34,6 @@ test('LiveStreamingSession processes chunks and emits update', async () => {
         sourceName: 'test-source',
         client,
         streamingConfig: {
-            silenceFillMs: 100000, // avoid filler noise during test
             maxPendingChunkMs: 50
         },
         converterFactory: converter.factory
@@ -53,7 +52,10 @@ test('LiveStreamingSession processes chunks and emits update', async () => {
         session.on('update', handler);
     });
 
-    const buffer = Buffer.alloc(4000); // > TARGET_CHUNK_SIZE to force flush
+    const buffer = Buffer.alloc(4000);
+    for (let i = 0; i < buffer.length; i += 2) {
+        buffer.writeInt16LE(6000, i);
+    }
     session.addChunk({ buffer, sequence: 1, captureTimestamp: Date.now() });
     session.addChunk({ buffer, sequence: 2, captureTimestamp: Date.now() });
     session.addChunk({ buffer, sequence: 3, captureTimestamp: Date.now() });

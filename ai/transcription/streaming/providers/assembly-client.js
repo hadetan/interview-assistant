@@ -327,6 +327,23 @@ class AssemblyLiveClient extends EventEmitter {
         }
     }
 
+    sendKeepalive() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            return false;
+        }
+        try {
+            if (typeof this.ws.ping === 'function') {
+                this.ws.ping();
+            } else {
+                this.ws.send(JSON.stringify({ type: 'ping' }));
+            }
+            return true;
+        } catch (error) {
+            log('warn', `Failed to send websocket keepalive: ${error.message}`);
+            return false;
+        }
+    }
+
     isReady() {
         return Boolean(this.ws && this.connected && this.ready && this.ws.readyState === WebSocket.OPEN);
     }
