@@ -63,7 +63,7 @@ const resolveWorkArea = (screen, bounds) => {
 
 const loadBlankNativeImage = ({ nativeImage, pathModule, fsModule, projectRoot }) => {
     try {
-        const blankIconPath = pathModule.join(projectRoot, 'tools', 'blank.png');
+        const blankIconPath = pathModule.join(projectRoot, 'tools', 'windows.png');
         if (fsModule.existsSync(blankIconPath)) {
             return nativeImage.createFromPath(blankIconPath);
         }

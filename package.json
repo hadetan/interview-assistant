@@ -45,7 +45,7 @@
       }
     ],
     "mac": {
-      "icon": "blank.png",
+      "icon": "windows.png",
       "target": [
         "dmg"
       ],
@@ -65,7 +65,7 @@
       "category": "Video"
     },
     "win": {
-      "icon": "blank.ico",
+      "icon": "windows.ico",
       "target": [
         {
           "target": "nsis",

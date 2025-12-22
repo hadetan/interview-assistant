@@ -1,6 +1,6 @@
 // ==================== Inject this script in browser ====================
 /**
- * You can visit about:blank in browser and in console dump this whole script there and test the app out.
+ * You can visit about:windows in browser and in console dump this whole script there and test the app out.
  * It's a very light and simple cheat detector.
  */
 (function () {
