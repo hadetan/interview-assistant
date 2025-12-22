@@ -13,6 +13,17 @@ const SOURCE_TYPES = {
 };
 export const TRANSCRIPTION_SOURCE_TYPES = SOURCE_TYPES;
 
+const createClientSessionId = () => {
+    try {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch (_error) {
+        // ignore inability to use crypto.randomUUID
+    }
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 const createConversationId = () => {
     try {
         if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -35,6 +46,7 @@ export function useTranscriptionSession({ isControlWindow }) {
     const stopTranscriptionListenerRef = useRef(null);
     const sessionTrackersRef = useRef(new Map());
     const sourceSessionMapRef = useRef(new Map());
+    const pendingSessionStartsRef = useRef(new Map());
     const latencyTimerRef = useRef(null);
     const lastLatencyTsRef = useRef(0);
     const latencyLabelRef = useRef('');
@@ -200,6 +212,12 @@ export function useTranscriptionSession({ isControlWindow }) {
 
     const teardownSession = useCallback(async () => {
         resetTranscriptionListener();
+        pendingSessionStartsRef.current.forEach((entry) => {
+            if (entry) {
+                entry.cancelled = true;
+            }
+        });
+        pendingSessionStartsRef.current.clear();
         const sessionIds = Array.from(sessionTrackersRef.current.keys());
         sessionIdRef.current = null;
         sourceSessionMapRef.current.clear();
@@ -238,32 +256,118 @@ export function useTranscriptionSession({ isControlWindow }) {
         if (typeof electronAPI?.transcription?.startSession !== 'function') {
             throw new Error('Transcription start API unavailable.');
         }
-        const response = await electronAPI.transcription.startSession({ sourceName, platform, sourceType });
-        const receivedSessionId = response?.sessionId || null;
-        if (receivedSessionId) {
-            ensureSessionTracker(receivedSessionId, sourceType);
+
+        const provisionalSessionId = createClientSessionId();
+        const startToken = Symbol(sourceType || 'session');
+
+        ensureSessionTracker(provisionalSessionId, sourceType);
+        sourceSessionMapRef.current.set(sourceType, provisionalSessionId);
+        if (sourceType === SOURCE_TYPES.SYSTEM) {
+            sessionIdRef.current = provisionalSessionId;
+        }
+
+        pendingSessionStartsRef.current.set(sourceType, {
+            sessionId: provisionalSessionId,
+            token: startToken,
+            cancelled: false
+        });
+
+        let response;
+        try {
+            response = await electronAPI.transcription.startSession({
+                sessionId: provisionalSessionId,
+                sourceName,
+                platform,
+                sourceType
+            });
+        } catch (error) {
+            const pending = pendingSessionStartsRef.current.get(sourceType);
+            if (pending?.token === startToken) {
+                pendingSessionStartsRef.current.delete(sourceType);
+            }
+            if (sourceSessionMapRef.current.get(sourceType) === provisionalSessionId) {
+                sourceSessionMapRef.current.delete(sourceType);
+                if (sourceType === SOURCE_TYPES.SYSTEM && sessionIdRef.current === provisionalSessionId) {
+                    sessionIdRef.current = null;
+                }
+            }
+            sessionTrackersRef.current.delete(provisionalSessionId);
+            throw error;
+        }
+
+        const receivedSessionId = response?.sessionId || provisionalSessionId;
+        const pending = pendingSessionStartsRef.current.get(sourceType);
+        const isStale = !pending || pending.token !== startToken;
+        const wasCancelled = pending?.cancelled === true;
+
+        if (!isStale) {
+            pendingSessionStartsRef.current.delete(sourceType);
+        }
+
+        if (isStale || wasCancelled) {
+            if (sourceSessionMapRef.current.get(sourceType) === provisionalSessionId) {
+                sourceSessionMapRef.current.delete(sourceType);
+                if (sourceType === SOURCE_TYPES.SYSTEM && sessionIdRef.current === provisionalSessionId) {
+                    sessionIdRef.current = null;
+                }
+            }
+            sessionTrackersRef.current.delete(provisionalSessionId);
+            if (receivedSessionId && receivedSessionId !== provisionalSessionId) {
+                sessionTrackersRef.current.delete(receivedSessionId);
+            }
+            if (typeof electronAPI?.transcription?.stopSession === 'function') {
+                try {
+                    await electronAPI.transcription.stopSession(receivedSessionId);
+                } catch (_error) {
+                    // ignore inability to stop a just-cancelled session
+                }
+            }
+            return { sessionId: receivedSessionId, cancelled: true };
+        }
+
+        if (receivedSessionId && receivedSessionId !== provisionalSessionId) {
+            const tracker = sessionTrackersRef.current.get(provisionalSessionId);
+            if (tracker) {
+                sessionTrackersRef.current.delete(provisionalSessionId);
+                tracker.sessionId = receivedSessionId;
+                sessionTrackersRef.current.set(receivedSessionId, tracker);
+            }
             sourceSessionMapRef.current.set(sourceType, receivedSessionId);
-            if (sourceType === SOURCE_TYPES.SYSTEM) {
+            if (sourceType === SOURCE_TYPES.SYSTEM && sessionIdRef.current === provisionalSessionId) {
                 sessionIdRef.current = receivedSessionId;
             }
         }
-        return response;
+
+        return { sessionId: receivedSessionId, cancelled: false };
     }, [ensureSessionTracker]);
 
     const stopTranscriptionSession = useCallback(async ({ sourceType = SOURCE_TYPES.SYSTEM } = {}) => {
-        const targetSessionId = sourceSessionMapRef.current.get(sourceType);
+        const pending = pendingSessionStartsRef.current.get(sourceType);
+        if (pending) {
+            pending.cancelled = true;
+        }
+
+        const targetSessionId = sourceSessionMapRef.current.get(sourceType) || pending?.sessionId;
         if (!targetSessionId || typeof electronAPI?.transcription?.stopSession !== 'function') {
+            if (pending) {
+                pendingSessionStartsRef.current.delete(sourceType);
+            }
             return;
         }
+
         if (sourceType === SOURCE_TYPES.SYSTEM && sessionIdRef.current === targetSessionId) {
             sessionIdRef.current = null;
         }
+
         sourceSessionMapRef.current.delete(sourceType);
+        pendingSessionStartsRef.current.delete(sourceType);
+
         try {
             await electronAPI.transcription.stopSession(targetSessionId);
         } catch (_error) {
-            // ignore
+            // ignore inability to stop an already-closed session
         }
+
         if (sourceType === SOURCE_TYPES.SYSTEM) {
             resetLatencyWatchdog();
         }

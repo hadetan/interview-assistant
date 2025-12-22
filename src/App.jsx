@@ -110,7 +110,7 @@ function App() {
     return isControlWindow ? (
         <ControlWindow session={session} chunkTimeslice={chunkTimeslice} preferredMimeType={preferredMimeType} platform={platform} />
     ) : (
-        <TranscriptWindow session={session} chunkTimeslice={chunkTimeslice} />
+        <TranscriptWindow session={session}/>
     );
 }
 

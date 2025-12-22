@@ -5,17 +5,15 @@ import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const SCROLL_STEP_PX = 280;
 
-export default function TranscriptWindow({ session, chunkTimeslice }) {
+export default function TranscriptWindow({ session }) {
     const {
         messages,
-        latencyStatus,
         isStreaming,
         attachTranscriptionEvents,
         attachAssistantEvents,
         clearTranscript,
         requestAssistantResponse,
-        attachImageToDraft,
-        notification
+        attachImageToDraft
     } = session;
     const { transcriptRef, scrollBy, resetScroll } = useTranscriptScroll({ messages });
 
@@ -32,7 +30,7 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
     useEffect(() => {
         const api = electronAPI?.controlWindow;
         if (!api) {
-            return () => {};
+            return () => { };
         }
         const unsubscribes = [];
         if (typeof api.onScrollUp === 'function') {
@@ -95,7 +93,16 @@ export default function TranscriptWindow({ session, chunkTimeslice }) {
                     </div>
                 </div>
                 <footer className="transcript-meta">
-                    <span>{latencyStatus || `Chunk cadence ${chunkTimeslice} ms`}</span>
+                    <div id='left'>
+                        <span>Start/Stop: <code>CTRL+SHIFT+/</code> & Mic On/Off: <code>CTRL+SHIFT+M</code></span>
+                        <br />
+                        <span>Capture: <code>CTRL+SHIFT+H</code> & Ask: <code>CTRL+ENTER</code></span>
+                    </div>
+                    <div id='right'>
+                        <span>Move Window: <code>CTRL+↑↓←→</code></span>
+                        <br />
+                        <span>Scroll Content: <code>CTRL+SHIFT+↑↓</code></span>
+                    </div>
                 </footer>
             </section>
         </div>

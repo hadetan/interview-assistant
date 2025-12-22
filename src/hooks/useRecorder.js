@@ -41,6 +41,7 @@ export function useRecorder({
     const captureStreamRef = useRef(null);
     const recordingMimeTypeRef = useRef(preferredMimeType || DEFAULT_MIME);
     const chunkSequenceRef = useRef(0);
+    const stopSignalRef = useRef(0);
     const micStreamRef = useRef(null);
     const micRecorderRef = useRef(null);
     const micMimeTypeRef = useRef(preferredMimeType || DEFAULT_MIME);
@@ -194,11 +195,14 @@ export function useRecorder({
             }
 
             if (!sessionApi.getSessionId(SOURCE_TYPES.MIC)) {
-                await sessionApi.startSourceSession({
+                const startResult = await sessionApi.startSourceSession({
                     sourceName: 'Microphone',
                     platform,
                     sourceType: SOURCE_TYPES.MIC
                 });
+                if (startResult?.cancelled) {
+                    return { ok: false, reason: 'cancelled' };
+                }
             }
 
             const recorderOptions = buildRecorderOptions(preferredMimeType);
@@ -297,6 +301,7 @@ export function useRecorder({
     }, [isMicActive, isMicPending, isRecording, startMicProcessing, stopMicProcessing]);
 
     const stopCapture = useCallback(async () => {
+        stopSignalRef.current += 1;
         setIsMicPending(false);
         setMicPendingAction(null);
         await stopMicRecorder({ keepStream: false, stopSession: false });
@@ -324,79 +329,131 @@ export function useRecorder({
         await sessionApi.teardownSession();
     }, [preferredMimeType, sessionApi, stopMicRecorder]);
 
-    const startStreamingWithSource = useCallback(async (source) => {
+    const startStreamingWithSource = useCallback(async (source, stopToken) => {
         const sourceId = source?.id;
         if (!sourceId) {
             sessionApi.setStatus('No valid source selected.');
-            return;
+            return { ok: false, reason: 'invalid-source' };
         }
+
+        const token = typeof stopToken === 'number' ? stopToken : stopSignalRef.current;
+        const isCancelled = () => stopSignalRef.current !== token;
+
         setIsSelectingSource(true);
         sessionApi.setStatus('Preparing capture stream…');
+
         const videoConstraints = buildVideoConstraints(sourceId);
         const audioConstraints = buildAudioConstraints(sourceId, platform);
+
         let stream;
+        let audioStream;
         try {
+            if (isCancelled()) {
+                return { ok: false, reason: 'cancelled' };
+            }
+
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: audioConstraints,
                 video: videoConstraints
             });
-        } catch (error) {
-            console.error('Failed to obtain capture stream', error);
-            sessionApi.setStatus(`Failed to capture system audio: ${error?.message || error}`);
-            setIsSelectingSource(false);
-            return;
-        }
-        captureStreamRef.current = stream;
-        const audioTracks = stream.getAudioTracks();
-        if (!audioTracks.length) {
-            sessionApi.setStatus('No system audio track detected.');
-            setIsSelectingSource(false);
-            return;
-        }
-        const audioStream = new MediaStream(audioTracks);
-        await initializeMicStream();
-        try {
-            await sessionApi.startTranscriptionSession({
+
+            if (isCancelled()) {
+                stream.getTracks().forEach((track) => track.stop());
+                captureStreamRef.current = null;
+                return { ok: false, reason: 'cancelled' };
+            }
+
+            captureStreamRef.current = stream;
+            const audioTracks = stream.getAudioTracks();
+            if (!audioTracks.length) {
+                stream.getTracks().forEach((track) => track.stop());
+                captureStreamRef.current = null;
+                sessionApi.setStatus('No system audio track detected.');
+                return { ok: false, reason: 'no-audio-track' };
+            }
+
+            audioStream = new MediaStream(audioTracks);
+
+            await initializeMicStream();
+            if (isCancelled()) {
+                stream.getTracks().forEach((track) => track.stop());
+                captureStreamRef.current = null;
+                return { ok: false, reason: 'cancelled' };
+            }
+
+            const startResult = await sessionApi.startTranscriptionSession({
                 sourceName: source.name || source.id,
                 platform,
                 sourceType: SOURCE_TYPES.SYSTEM
             });
-        } catch (error) {
-            console.error('Failed to start transcription session', error);
-            sessionApi.setStatus(`Transcription unavailable: ${error?.message || 'unknown error'}`);
-            setIsSelectingSource(false);
-            await stopCapture();
-            return;
-        }
-        sessionApi.attachTranscriptionEvents();
-        const recorderOptions = buildRecorderOptions(preferredMimeType);
-        try {
-            mediaRecorderRef.current = new MediaRecorder(audioStream, recorderOptions);
-        } catch (error) {
-            console.warn('Preferred mime type failed, falling back to default', recorderOptions, error);
-            mediaRecorderRef.current = new MediaRecorder(audioStream);
-        }
-        const recorder = mediaRecorderRef.current;
-        recordingMimeTypeRef.current = recorder?.mimeType || preferredMimeType || DEFAULT_MIME;
-        recorder.addEventListener('dataavailable', handleChunk);
-        recorder.addEventListener('error', async (event) => {
-            console.error('MediaRecorder error', event.error);
-            sessionApi.setStatus(`Recorder error: ${event.error?.message || event.error}`);
-            await stopCapture();
-        });
-        recorder.addEventListener('stop', () => {
-            mediaRecorderRef.current = null;
-            if (captureStreamRef.current) {
-                captureStreamRef.current.getTracks().forEach((track) => track.stop());
-                captureStreamRef.current = null;
+
+            if (!startResult?.sessionId) {
+                sessionApi.setStatus('Transcription unavailable: session missing identifier.');
+                await stopCapture();
+                return { ok: false, reason: 'session-start-failed' };
             }
-        });
-        chunkSequenceRef.current = 0;
-        recorder.start(chunkTimeslice);
-        sessionApi.clearTranscript();
-        sessionApi.setStatus('Capturing system audio…');
-        setIsRecording(true);
-        setIsSelectingSource(false);
+
+            if (startResult.cancelled || isCancelled()) {
+                stream.getTracks().forEach((track) => track.stop());
+                captureStreamRef.current = null;
+                return { ok: false, reason: 'cancelled' };
+            }
+
+            sessionApi.attachTranscriptionEvents();
+
+            const recorderOptions = buildRecorderOptions(preferredMimeType);
+            try {
+                mediaRecorderRef.current = new MediaRecorder(audioStream, recorderOptions);
+            } catch (error) {
+                console.warn('Preferred mime type failed, falling back to default', recorderOptions, error);
+                if (isCancelled()) {
+                    stream.getTracks().forEach((track) => track.stop());
+                    captureStreamRef.current = null;
+                    return { ok: false, reason: 'cancelled' };
+                }
+                mediaRecorderRef.current = new MediaRecorder(audioStream);
+            }
+
+            const recorder = mediaRecorderRef.current;
+            recordingMimeTypeRef.current = recorder?.mimeType || preferredMimeType || DEFAULT_MIME;
+            recorder.addEventListener('dataavailable', handleChunk);
+            recorder.addEventListener('error', async (event) => {
+                console.error('MediaRecorder error', event.error);
+                sessionApi.setStatus(`Recorder error: ${event.error?.message || event.error}`);
+                await stopCapture();
+            });
+            recorder.addEventListener('stop', () => {
+                mediaRecorderRef.current = null;
+                if (captureStreamRef.current) {
+                    captureStreamRef.current.getTracks().forEach((track) => track.stop());
+                    captureStreamRef.current = null;
+                }
+            });
+
+            chunkSequenceRef.current = 0;
+            recorder.start(chunkTimeslice);
+
+            if (isCancelled()) {
+                try {
+                    recorder.stop();
+                } catch (_error) {
+                    // ignore inability to stop an already-stopped recorder
+                }
+                return { ok: false, reason: 'cancelled' };
+            }
+
+            sessionApi.clearTranscript();
+            sessionApi.setStatus('Capturing system audio…');
+            setIsRecording(true);
+            return { ok: true };
+        } catch (error) {
+            console.error('Failed to obtain capture stream', error);
+            sessionApi.setStatus(`Failed to capture system audio: ${error?.message || error}`);
+            await stopCapture();
+            return { ok: false, error, reason: 'error' };
+        } finally {
+            setIsSelectingSource(false);
+        }
     }, [chunkTimeslice, handleChunk, initializeMicStream, platform, preferredMimeType, sessionApi, stopCapture]);
 
     const startRecording = useCallback(async () => {
@@ -404,6 +461,7 @@ export function useRecorder({
             sessionApi.setStatus('Desktop capture API unavailable in preload.');
             return;
         }
+        const stopToken = stopSignalRef.current;
         setIsSelectingSource(true);
         setIsMicReady(false);
         setIsMicPending(false);
@@ -412,12 +470,15 @@ export function useRecorder({
         sessionApi.setStatus('Requesting capture sources…');
         try {
             const sources = await electronAPI.getDesktopSources({ types: ['screen', 'window'] });
-            setIsSelectingSource(false);
             if (!sources?.length) {
+                setIsSelectingSource(false);
                 sessionApi.setStatus('No sources returned.');
                 return;
             }
-            await startStreamingWithSource(sources[0]);
+            const result = await startStreamingWithSource(sources[0], stopToken);
+            if (!result?.ok && result?.reason === 'cancelled') {
+                sessionApi.setStatus('Idle');
+            }
         } catch (error) {
             console.error('Failed to list sources', error);
             setIsSelectingSource(false);
