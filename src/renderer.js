@@ -48,9 +48,6 @@ const buildVideoConstraints = (sourceId) => ({
 });
 
 const buildAudioConstraints = (sourceId) => {
-    if (platform === 'darwin') {
-        return false;
-    }
     return {
         mandatory: {
             chromeMediaSource: 'desktop',
@@ -530,7 +527,7 @@ if (stopButton) {
 }
 
 window.addEventListener('beforeunload', () => {
-    stopCapture().catch(() => {});
+    stopCapture().catch(() => { });
 });
 
 updateButtonStates();

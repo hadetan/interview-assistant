@@ -23,6 +23,12 @@ if (process.platform === 'linux') {
     app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
 }
 
+// Enable desktop audio capture on macOS
+// if (process.platform === 'darwin') {
+//     app.commandLine.appendSwitch('enable-features', 'ScreenCaptureKitMac');
+//     app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
+// }
+
 let transcriptionService = null;
 let transcriptionInitPromise = null;
 let transcriptionConfig = null;

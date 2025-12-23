@@ -447,7 +447,13 @@ export function useRecorder({
             setIsRecording(true);
             return { ok: true };
         } catch (error) {
-            console.error('Failed to obtain capture stream', error);
+            console.error('[AUDIO DEBUG] Failed to obtain capture stream', error);
+            console.error('[AUDIO DEBUG] Error details:', {
+                message: error?.message,
+                name: error?.name,
+                code: error?.code,
+                stack: error?.stack
+            });
             sessionApi.setStatus(`Failed to capture system audio: ${error?.message || error}`);
             await stopCapture();
             return { ok: false, error, reason: 'error' };

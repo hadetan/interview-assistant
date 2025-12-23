@@ -3,3 +3,4 @@ node_modules
 dist
 sample
 .vscode
+.DS_Store

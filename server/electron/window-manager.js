@@ -320,21 +320,27 @@ const createWindowManager = ({
         if (stealthModeEnabled) {
             controlWindow.setAlwaysOnTop(true, 'screen-saver');
             controlWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+            controlWindow.setIgnoreMouseEvents(true, { forward: true });
         } else {
             controlWindow.setAlwaysOnTop(true, 'normal');
             controlWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+            controlWindow.setIgnoreMouseEvents(false);
         }
         controlWindow.setFullScreenable(false);
-        controlWindow.setIgnoreMouseEvents(true, { forward: true });
 
         controlWindow.once('ready-to-show', () => {
             if (stealthModeEnabled) {
                 controlWindow?.showInactive();
+                controlWindow?.setIgnoreMouseEvents(true, { forward: true });
             } else {
                 controlWindow?.show();
                 controlWindow?.focus();
+                controlWindow?.setIgnoreMouseEvents(false);
+                // Open DevTools in OFF=true mode
+                if (process.env.ELECTRON_START_URL) {
+                    controlWindow?.webContents.openDevTools({ mode: 'detach' });
+                }
             }
-            controlWindow?.setIgnoreMouseEvents(true, { forward: true });
             positionOverlayWindows();
         });
 
