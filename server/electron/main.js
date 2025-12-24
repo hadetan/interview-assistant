@@ -24,10 +24,10 @@ if (process.platform === 'linux') {
 }
 
 // Enable desktop audio capture on macOS
-// if (process.platform === 'darwin') {
-//     app.commandLine.appendSwitch('enable-features', 'ScreenCaptureKitMac');
-//     app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
-// }
+if (process.platform === 'darwin') {
+    app.commandLine.appendSwitch('enable-features', 'ScreenCaptureKitMac');
+    app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
+}
 
 let transcriptionService = null;
 let transcriptionInitPromise = null;
@@ -245,7 +245,7 @@ const initializeApp = async () => {
     shortcutManager.registerShortcut(moveDown, () => moveOverlaysBy(0, moveStepPx));
 
     /* Gracefully quit app */
-    const quitAppShortcut = 'CommandOrControl+Alt+Shift+Q';
+    const quitAppShortcut = 'Alt+Shift+Q';
 
     /* Hide or unhide the app */
     const visibilityToggleShortcut = 'CommandOrControl+Shift+B';

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { TRANSCRIPTION_SOURCE_TYPES as SOURCE_TYPES } from './useTranscriptionSession';
+import { TRANSCRIPTION_SOURCE_TYPES as SOURCE_TYPES } from './useTranscriptionSession.js';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const DEFAULT_MIME = 'audio/webm;codecs=opus';
@@ -12,9 +12,6 @@ const buildVideoConstraints = (sourceId) => ({
     }
 });
 const buildAudioConstraints = (sourceId, platform) => {
-    if (platform === 'darwin') {
-        return false;
-    }
     return {
         mandatory: {
             chromeMediaSource: 'desktop',
@@ -365,21 +362,14 @@ export function useRecorder({
 
             captureStreamRef.current = stream;
             const audioTracks = stream.getAudioTracks();
-            if (!audioTracks.length) {
+            if (audioTracks.length === 0) {
                 stream.getTracks().forEach((track) => track.stop());
                 captureStreamRef.current = null;
                 sessionApi.setStatus('No system audio track detected.');
                 return { ok: false, reason: 'no-audio-track' };
             }
 
-            audioStream = new MediaStream(audioTracks);
-
-            await initializeMicStream();
-            if (isCancelled()) {
-                stream.getTracks().forEach((track) => track.stop());
-                captureStreamRef.current = null;
-                return { ok: false, reason: 'cancelled' };
-            }
+            audioStream = new MediaStream([audioTracks[0]]);
 
             const startResult = await sessionApi.startTranscriptionSession({
                 sourceName: source.name || source.id,
@@ -460,7 +450,7 @@ export function useRecorder({
         } finally {
             setIsSelectingSource(false);
         }
-    }, [chunkTimeslice, handleChunk, initializeMicStream, platform, preferredMimeType, sessionApi, stopCapture]);
+    }, [chunkTimeslice, handleChunk, platform, preferredMimeType, sessionApi, stopCapture]);
 
     const startRecording = useCallback(async () => {
         if (!electronAPI?.getDesktopSources) {

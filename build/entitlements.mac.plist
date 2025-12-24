@@ -16,5 +16,8 @@
     <true/>
     <key>com.apple.security.personal-information.screen-recording</key>
     <true/>
+
+    <key>com.apple.security.device.audio-output</key>
+    <true/>
 </dict>
 </plist>

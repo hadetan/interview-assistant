@@ -71,24 +71,18 @@ export default function ControlWindow({
     const micButtonLabel = useMemo(() => {
         if (mic.isPending) {
             if (mic.pendingAction === 'stopping') {
-                return 'Stopping Mic…';
+                return 'Stopping…';
             }
-            return 'Starting Mic…';
-        }
-        if (!mic.isReady) {
-            return 'Mic';
+            return 'Starting…';
         }
         return mic.isActive ? 'Stop Mic' : 'Start Mic';
-    }, [isRecording, mic]);
+    }, [mic]);
 
     const isMicButtonDisabled = useMemo(() => {
         if (!isRecording) {
             return true;
         }
-        if (mic.isPending) {
-            return true;
-        }
-        return !mic.isReady;
+        return mic.isPending;
     }, [isRecording, mic]);
 
     useMemo(() => {
@@ -161,7 +155,7 @@ export default function ControlWindow({
         };
     }, [stopRecording]);
 
-    const startLabel = useMemo(() => (isSelectingSource ? 'Starting…' : 'Start'), [isSelectingSource]);
+    const startLabel = useMemo(() => (isSelectingSource ? 'Starting…' : 'Capture'), [isSelectingSource]);
     const canStart = !isRecording && !isSelectingSource;
     const canStop = isRecording;
 
