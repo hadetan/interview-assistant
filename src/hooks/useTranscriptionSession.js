@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { initialTranscriptText, resolveTranscriptText, isTranscriptRollback } from '../utils/transcriptText';
-import { buildAttachmentPreview, mergeAttachmentPreviews } from '../utils/attachmentPreview';
-import { mergeAssistantText } from '../utils/assistantMessage';
+import { initialTranscriptText, resolveTranscriptText, isTranscriptRollback } from '../utils/transcriptText.js';
+import { buildAttachmentPreview, mergeAttachmentPreviews } from '../utils/attachmentPreview.js';
+import { mergeAssistantText } from '../utils/assistantMessage.js';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const STALL_THRESHOLD_MS = 1500;

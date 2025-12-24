@@ -75,20 +75,14 @@ export default function ControlWindow({
             }
             return 'Starting Mic…';
         }
-        if (!mic.isReady) {
-            return 'Mic';
-        }
         return mic.isActive ? 'Stop Mic' : 'Start Mic';
-    }, [isRecording, mic]);
+    }, [mic]);
 
     const isMicButtonDisabled = useMemo(() => {
         if (!isRecording) {
             return true;
         }
-        if (mic.isPending) {
-            return true;
-        }
-        return !mic.isReady;
+        return mic.isPending;
     }, [isRecording, mic]);
 
     useMemo(() => {
