@@ -110,7 +110,7 @@ export function useRecorder({
             micStreamRef.current = null;
         }
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
             micStreamRef.current = stream;
             setIsMicReady(true);
             setMicError('');

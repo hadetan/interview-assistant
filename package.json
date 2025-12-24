@@ -54,8 +54,10 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "ScreenAudioCapture needs microphone or loopback access to include audio in recordings.",
-        "NSCameraUsageDescription": "ScreenAudioCapture requests screen access to capture display content."
+        "NSMicrophoneUsageDescription": "This app needs access to the microphone or system audio to record audio during screen capture.",
+        "NSCameraUsageDescription": "This app needs screen recording access to capture your screen (required even for audio-only capture on macOS).",
+        "NSScreenCaptureUsageDescription": "This app captures your screen and/or system audio for recording purposes.",
+        "NSAudioCaptureUsageDescription": "This app may capture system audio (speaker output) during recordings."
       }
     },
     "linux": {
