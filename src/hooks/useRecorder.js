@@ -110,7 +110,7 @@ export function useRecorder({
             micStreamRef.current = null;
         }
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
             micStreamRef.current = stream;
             setIsMicReady(true);
             setMicError('');
@@ -362,14 +362,14 @@ export function useRecorder({
 
             captureStreamRef.current = stream;
             const audioTracks = stream.getAudioTracks();
-            if (!audioTracks.length) {
+            if (audioTracks.length === 0) {
                 stream.getTracks().forEach((track) => track.stop());
                 captureStreamRef.current = null;
                 sessionApi.setStatus('No system audio track detected.');
                 return { ok: false, reason: 'no-audio-track' };
             }
 
-            audioStream = new MediaStream(audioTracks);
+            audioStream = new MediaStream([audioTracks[0]]);
 
             const startResult = await sessionApi.startTranscriptionSession({
                 sourceName: source.name || source.id,
