@@ -541,7 +541,7 @@ const createWindowManager = ({
 
         settingsWindow = new BrowserWindow({
             width: 720,
-            height: 540,
+            height: 640,
             frame: true,
             transparent: false,
             resizable: true,

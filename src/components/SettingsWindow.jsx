@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 
@@ -20,8 +20,34 @@ function SettingsWindow() {
     const [modelsLoading, setModelsLoading] = useState(false);
     const [connectionVerified, setConnectionVerified] = useState(false);
     const [initialized, setInitialized] = useState(false);
+    const [hasSavedConfig, setHasSavedConfig] = useState(false);
+
+    const modelsRequestIdRef = useRef(0);
+    const fetchModelsTimeoutRef = useRef(null);
 
     const providerOptions = useMemo(() => providers.map((name) => ({ value: name, label: toTitleCase(name) })), [providers]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined' || !hasSavedConfig) {
+            return () => {};
+        }
+
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                electronAPI?.settings?.close?.();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [hasSavedConfig]);
+
+    useEffect(() => () => {
+        if (fetchModelsTimeoutRef.current) {
+            clearTimeout(fetchModelsTimeoutRef.current);
+            fetchModelsTimeoutRef.current = null;
+        }
+    }, []);
 
     useEffect(() => {
         const load = async () => {
@@ -39,6 +65,8 @@ function SettingsWindow() {
                 setModel(nextModel);
                 setHasStoredSecret(Boolean(result.hasSecret));
                 setMissing(result.missing || emptyMissing);
+                const storedConfigured = !(result?.missing?.provider || result?.missing?.model || result?.missing?.apiKey);
+                setHasSavedConfig(storedConfigured);
                 if (nextProvider) {
                     await loadModels(nextProvider, {
                         apiKeyOverride: '',
@@ -62,8 +90,13 @@ function SettingsWindow() {
     }, [provider, apiKey]);
 
     const loadModels = async (targetProvider, { apiKeyOverride = '', ensureContainsModel = '', skipStatus = false } = {}) => {
+        const requestId = ++modelsRequestIdRef.current;
+
         if (!targetProvider) {
-            setModels([]);
+            if (requestId === modelsRequestIdRef.current) {
+                setModels([]);
+                setModelsLoading(false);
+            }
             return;
         }
         setModelsLoading(true);
@@ -85,14 +118,20 @@ function SettingsWindow() {
                     items = [...items, { id: ensureContainsModel, name: ensureContainsModel }];
                 }
             }
-            setModels(items);
-            if (!skipStatus) {
-                setStatus({ type: 'success', message: `Loaded ${items.length} model${items.length === 1 ? '' : 's'}.` });
+            if (requestId === modelsRequestIdRef.current) {
+                setModels(items);
+                if (!skipStatus) {
+                    setStatus({ type: 'success', message: `Loaded ${items.length} model${items.length === 1 ? '' : 's'}.` });
+                }
             }
         } catch (error) {
-            setStatus({ type: 'error', message: error?.message || 'Failed to fetch models.' });
+            if (requestId === modelsRequestIdRef.current) {
+                setStatus({ type: 'error', message: error?.message || 'Failed to fetch models.' });
+            }
         } finally {
-            setModelsLoading(false);
+            if (requestId === modelsRequestIdRef.current) {
+                setModelsLoading(false);
+            }
         }
     };
 
@@ -102,10 +141,17 @@ function SettingsWindow() {
         setProvider(nextProvider);
         setModel('');
         setModels([]);
+        setModelsLoading(false);
         setHasStoredSecret(false);
         setMissing((prev) => ({ ...prev, provider: !nextProvider, model: true, apiKey: true }));
-        if (nextProvider && (apiKey || hadStoredSecret)) {
-            await loadModels(nextProvider, { apiKeyOverride: apiKey, skipStatus: true });
+        if (fetchModelsTimeoutRef.current) {
+            clearTimeout(fetchModelsTimeoutRef.current);
+            fetchModelsTimeoutRef.current = null;
+        }
+        modelsRequestIdRef.current += 1;
+        const trimmedKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+        if (nextProvider && (trimmedKey || hadStoredSecret)) {
+            await loadModels(nextProvider, { apiKeyOverride: trimmedKey, skipStatus: true });
         }
     };
 
@@ -122,15 +168,40 @@ function SettingsWindow() {
         setMissing((prev) => ({ ...prev, apiKey: !trimmed }));
 
         if (!provider) {
+            if (fetchModelsTimeoutRef.current) {
+                clearTimeout(fetchModelsTimeoutRef.current);
+                fetchModelsTimeoutRef.current = null;
+            }
+            modelsRequestIdRef.current += 1;
             return;
         }
 
         if (!trimmed) {
+            if (fetchModelsTimeoutRef.current) {
+                clearTimeout(fetchModelsTimeoutRef.current);
+                fetchModelsTimeoutRef.current = null;
+            }
+            modelsRequestIdRef.current += 1;
             setModels([]);
+            setModelsLoading(false);
             return;
         }
 
-        await loadModels(provider, { apiKeyOverride: value });
+        if (fetchModelsTimeoutRef.current) {
+            clearTimeout(fetchModelsTimeoutRef.current);
+        }
+
+        fetchModelsTimeoutRef.current = setTimeout(() => {
+            fetchModelsTimeoutRef.current = null;
+            loadModels(provider, { apiKeyOverride: trimmed });
+        }, 350);
+    };
+
+    const handleClose = () => {
+        if (!hasSavedConfig) {
+            return;
+        }
+        electronAPI?.settings?.close?.();
     };
 
     const handleCheckConnection = async () => {
@@ -138,12 +209,13 @@ function SettingsWindow() {
             setStatus({ type: 'error', message: 'Select a provider first.' });
             return;
         }
+        const trimmedKey = typeof apiKey === 'string' ? apiKey.trim() : '';
         setChecking(true);
         setStatus({ type: 'info', message: 'Testing connection…' });
         try {
             const result = await electronAPI?.settings?.testConnection?.({
                 provider,
-                apiKey: apiKey || undefined
+                apiKey: trimmedKey || undefined
             });
             if (!result?.ok) {
                 throw new Error(result?.error || 'Connection failed.');
@@ -151,7 +223,7 @@ function SettingsWindow() {
             setStatus({ type: 'success', message: 'Connection verified. Select a model and save to finish.' });
             setConnectionVerified(true);
             await loadModels(provider, {
-                apiKeyOverride: apiKey,
+                apiKeyOverride: trimmedKey,
                 ensureContainsModel: model,
                 skipStatus: true
             });
@@ -171,10 +243,11 @@ function SettingsWindow() {
         setSaving(true);
         setStatus({ type: 'info', message: 'Saving settings…' });
         try {
+            const trimmedKey = typeof apiKey === 'string' ? apiKey.trim() : '';
             const payload = {
                 provider,
                 model,
-                apiKey: apiKey || undefined,
+                apiKey: trimmedKey || undefined,
                 providerConfig: {}
             };
             const result = await electronAPI?.settings?.set?.(payload);
@@ -182,6 +255,7 @@ function SettingsWindow() {
                 throw new Error(result?.error || 'Failed to save settings.');
             }
             setStatus({ type: 'success', message: 'Settings saved. You can close this window.' });
+            setHasSavedConfig(true);
         } catch (error) {
             setStatus({ type: 'error', message: error?.message || 'Failed to save settings.' });
         } finally {
@@ -189,15 +263,28 @@ function SettingsWindow() {
         }
     };
 
+    const normalizedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
     const showSaveButton = connectionVerified && !missing.model;
-    const canCheckConnection = provider && (apiKey || hasStoredSecret);
+    const canCheckConnection = provider && (normalizedApiKey || hasStoredSecret);
     const canSave = showSaveButton && !saving;
+
+    if (!initialized) return <div className="loading">Initializing…</div>;
 
     return (
         <div className="settings-window">
-            {!initialized && (
-                <div className="settings-status info">Initializing…</div>
-            )}
+            <header>
+                {initialized ? (
+                    hasSavedConfig ? (
+                        <h1>Settings</h1>
+                    ) : (
+                        <>
+                            <h1>Onboarding</h1>
+                            <h3>Please configure and pick your preferred AI provider</h3>
+                            <p>This will be used to answer the asked questions by interviewer and/or solve code problems</p>
+                        </>
+                    )
+                ) : null}
+            </header>
 
             <div className="settings-field">
                 <label htmlFor="assistant-provider">Assistant Provider</label>
@@ -224,7 +311,7 @@ function SettingsWindow() {
                     autoComplete="off"
                 />
                 {hasStoredSecret && !apiKey && (
-                    <p className="settings-hint">Using the stored key. Enter a new one to replace it.</p>
+                    <p className="settings-hint">If left empty then the stored key will be used. Enter a new one to replace it.</p>
                 )}
             </div>
 
@@ -265,6 +352,15 @@ function SettingsWindow() {
                         disabled={!canSave}
                     >
                         {saving ? 'Saving…' : 'Save Settings'}
+                    </button>
+                )}
+                {hasSavedConfig && (
+                    <button
+                        type="button"
+                        className="secondary"
+                        onClick={handleClose}
+                    >
+                        Close
                     </button>
                 )}
             </div>

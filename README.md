@@ -56,6 +56,7 @@ npm run dev
 -   `CTRL or CMD + [up/down/left/right]` arrow: Position top/bottom/left/right the windows
 -   `CTRL or CMD + SHIFT + B`: Hide or show windows
 -   `CTRL or CMD + ENTER`: Send the asked question to A.I.
+-   `CTRL or CMD + ,`: Open Settings
 -   `CTRL or CMD + SHIFT + H`: Attaches current screen as PNG image to give it to AI. Best use is to attach coding questions and it will return the solved code.
 -   `CTRL or CMD + SHIFT + M`: Turn mic on or off
 -   `ALT or OPTION + SHIFT + Q`: Quit app

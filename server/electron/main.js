@@ -381,6 +381,11 @@ const initializeApp = async () => {
         }
     });
 
+    const openSettingsShortcut = 'CommandOrControl+,';
+    shortcutManager.registerShortcut(openSettingsShortcut, () => {
+        ensureSettingsWindowVisible();
+    });
+
     /* Reveal or hide the transcript shortcut guide */
     const toggleGuideShortcut = 'CommandOrControl+H';
     shortcutManager.registerShortcut(toggleGuideShortcut, () => {
@@ -442,7 +447,7 @@ const initializeApp = async () => {
             });
 
             const allowedShortcuts = new Set(
-                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut]
+                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut, openSettingsShortcut]
                     .filter(Boolean)
             );
             shortcutManager.unregisterAllShortcutsExcept(allowedShortcuts);

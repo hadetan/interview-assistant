@@ -157,7 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         get: () => ipcRenderer.invoke('settings:get'),
         set: (payload) => ipcRenderer.invoke('settings:set', payload),
         testConnection: (payload) => ipcRenderer.invoke('settings:test-connection', payload),
-        listModels: (payload) => ipcRenderer.invoke('settings:list-models', payload)
+        listModels: (payload) => ipcRenderer.invoke('settings:list-models', payload),
+        close: () => ipcRenderer.invoke('settings:close')
     },
     overlay: {
         moveDirection: (direction) => {

@@ -218,6 +218,16 @@ const registerSettingsHandlers = ({
             };
         }
     });
+
+    ipcMain.handle('settings:close', async () => {
+        try {
+            windowManager?.destroySettingsWindow?.();
+            return { ok: true };
+        } catch (error) {
+            console.warn('[Settings] Failed to close settings window', error);
+            return { ok: false, error: error?.message || 'Failed to close settings window.' };
+        }
+    });
 };
 
 module.exports = {
