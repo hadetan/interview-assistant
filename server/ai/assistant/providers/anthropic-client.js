@@ -279,6 +279,40 @@ class AnthropicClient extends EventEmitter {
         this.activeStream = null;
         this.accumulatedText = '';
     }
+
+    async listModels() {
+        if (!this.apiKey) {
+            throw new Error('Anthropic API key is not configured.');
+        }
+        const client = this.ensureClient();
+        const response = await client.models.list();
+        const data = Array.isArray(response?.data) ? response.data : [];
+        return data
+            .map((model) => {
+                const id = typeof model?.id === 'string' ? model.id : (typeof model?.name === 'string' ? model.name : '');
+                if (!id) {
+                    return null;
+                }
+                const displayName = typeof model?.display_name === 'string' && model.display_name.trim()
+                    ? model.display_name.trim()
+                    : id;
+                return { id, name: displayName };
+            })
+            .filter(Boolean);
+    }
+
+    async testConnection() {
+        try {
+            await this.listModels();
+            return { ok: true };
+        } catch (error) {
+            const message = error?.message || 'Unable to connect to Anthropic.';
+            return {
+                ok: false,
+                error: message
+            };
+        }
+    }
 }
 
 module.exports = {

@@ -16,6 +16,9 @@ const { createWindowManager } = require('./window-manager');
 const { createShortcutManager } = require('./shortcuts');
 const { registerTranscriptionHandlers } = require('./ipc/transcription');
 const { registerAssistantHandlers } = require('./ipc/assistant');
+const { createSecureStore } = require('./secure-store');
+const { createSettingsStore } = require('./settings-store');
+const { registerSettingsHandlers } = require('./ipc/settings');
 
 loadEnv();
 
@@ -37,6 +40,8 @@ let assistantService = null;
 let assistantInitPromise = null;
 let assistantConfig = null;
 const assistantSessionWindowMap = new Map();
+let secureStore = null;
+let settingsStore = null;
 
 const MOVE_STEP_PX = 200;
 
@@ -122,23 +127,176 @@ const ensureAssistantService = async () => {
     return assistantService;
 };
 
+const buildAssistantConfigFromSettings = async () => {
+    if (!settingsStore || !secureStore) {
+        return loadAssistantConfig({});
+    }
+    const stored = settingsStore.getAssistantSettings();
+    const provider = typeof stored.provider === 'string' ? stored.provider : '';
+    const model = typeof stored.model === 'string' ? stored.model : '';
+    const providerConfig = stored.providerConfig || {};
+    const apiKey = provider ? await secureStore.getAssistantApiKey(provider) || '' : '';
+    return loadAssistantConfig({ provider, model, apiKey, providerConfig });
+};
+
+const attachAssistantServiceListeners = (service) => {
+    const emitToOwner = (sessionId, payload) => {
+        const windowId = assistantSessionWindowMap.get(sessionId);
+        if (!windowId) {
+            return;
+        }
+        const targetWindow = BrowserWindow.fromId(windowId);
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return;
+        }
+        targetWindow.webContents.send('assistant:stream', payload);
+    };
+
+    service.on('session-started', ({ sessionId, messageId }) => {
+        emitToOwner(sessionId, { type: 'started', sessionId, messageId });
+    });
+
+    service.on('session-update', (payload) => {
+        emitToOwner(payload.sessionId, { type: 'update', ...payload });
+    });
+
+    service.on('session-error', (payload) => {
+        emitToOwner(payload.sessionId, { type: 'error', ...payload });
+    });
+
+    service.on('session-stopped', (payload) => {
+        emitToOwner(payload.sessionId, { type: 'stopped', ...payload });
+        assistantSessionWindowMap.delete(payload.sessionId);
+    });
+};
+
+const teardownAssistantService = async () => {
+    if (!assistantService) {
+        assistantInitPromise = null;
+        return;
+    }
+
+    try {
+        await assistantService.cancelSession();
+    } catch (error) {
+        console.warn('[Assistant] Failed to cancel active session during teardown', error);
+    }
+
+    try {
+        assistantService.removeAllListeners?.();
+    } catch (error) {
+        console.warn('[Assistant] Failed to clear listeners during teardown', error);
+    }
+
+    assistantService = null;
+    assistantInitPromise = null;
+    assistantSessionWindowMap.clear();
+};
+
+const synchronizeAssistantConfiguration = async () => {
+    const config = await buildAssistantConfigFromSettings();
+    assistantConfig = config;
+
+    if (!config.isEnabled) {
+        await teardownAssistantService();
+        return config;
+    }
+
+    await teardownAssistantService();
+
+    assistantInitPromise = createAssistantService(config)
+        .then((service) => {
+            assistantService = service;
+            attachAssistantServiceListeners(service);
+            return service;
+        })
+        .catch((error) => {
+            console.error('[Assistant] Failed to initialize service', error);
+            assistantService = null;
+            assistantInitPromise = null;
+            return null;
+        });
+
+    return config;
+};
+
 const initializeApp = async () => {
-    windowManager.createControlWindow();
-    windowManager.createTranscriptWindow();
+    secureStore = secureStore || createSecureStore();
+    settingsStore = settingsStore || createSettingsStore({ app });
+
+    await synchronizeAssistantConfiguration();
 
     const {
         moveOverlaysBy,
         positionOverlayWindows,
         getControlWindow,
         getTranscriptWindow,
+        getSettingsWindow,
+        createControlWindow,
+        createTranscriptWindow,
+        createSettingsWindow,
+        destroySettingsWindow,
         moveStepPx
     } = windowManager;
 
-    assistantConfig = loadAssistantConfig();
+    const isAssistantEnabled = () => assistantConfig?.isEnabled !== false;
+    const assistantMissingPrerequisites = () => Boolean(
+        assistantConfig?.missing?.provider ||
+        assistantConfig?.missing?.model ||
+        assistantConfig?.missing?.apiKey
+    );
+
+    const ensureSettingsWindowVisible = () => {
+        const existing = getSettingsWindow();
+        if (existing) {
+            existing.focus();
+            return existing;
+        }
+        return createSettingsWindow();
+    };
+
+    const ensureOverlayWindowsVisible = () => {
+        if (!isAssistantEnabled()) {
+            return;
+        }
+        if (!getControlWindow()) {
+            createControlWindow();
+        }
+        if (!getTranscriptWindow()) {
+            createTranscriptWindow();
+        }
+        positionOverlayWindows();
+        destroySettingsWindow();
+    };
+
+    if (assistantMissingPrerequisites()) {
+        ensureSettingsWindowVisible();
+    } else {
+        ensureOverlayWindowsVisible();
+    }
+
+    registerSettingsHandlers({
+        ipcMain,
+        settingsStore,
+        secureStore,
+        windowManager,
+        resolveAssistantConfig: buildAssistantConfigFromSettings,
+        onSettingsApplied: async () => {
+            const updatedConfig = await synchronizeAssistantConfiguration();
+            if (updatedConfig && updatedConfig.isEnabled) {
+                ensureOverlayWindowsVisible();
+                shortcutManager.registerAllShortcuts();
+            }
+        }
+    });
 
     /* Start the app */
     const toggleShortcut = 'CommandOrControl+Shift+/';
     shortcutManager.registerShortcut(toggleShortcut, () => {
+        if (!isAssistantEnabled()) {
+            ensureSettingsWindowVisible();
+            return;
+        }
         const targets = [getControlWindow(), getTranscriptWindow()]
             .filter((win) => win && !win.isDestroyed());
         targets.forEach((win) => {
@@ -181,46 +339,52 @@ const initializeApp = async () => {
         }
     });
 
-    const assistantEnabled = assistantConfig?.isEnabled !== false;
-    let attachImageShortcut = null;
+    const assistantShortcut = 'CommandOrControl+Enter';
+    shortcutManager.registerShortcut(assistantShortcut, () => {
+        if (!isAssistantEnabled()) {
+            ensureSettingsWindowVisible();
+            return;
+        }
+        const transcriptWindow = getTranscriptWindow();
+        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+            transcriptWindow.webContents.send('control-window:assistant-send');
+        }
+    });
 
-    if (assistantEnabled) {
-        /* Send conversation and attachments to AI */
-        const assistantShortcut = 'CommandOrControl+Enter';
-        shortcutManager.registerShortcut(assistantShortcut, () => {
-            const transcriptWindow = getTranscriptWindow();
-            if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-                transcriptWindow.webContents.send('control-window:assistant-send');
+    const attachImageShortcut = 'CommandOrControl+Shift+H';
+    shortcutManager.registerShortcut(attachImageShortcut, async () => {
+        if (!isAssistantEnabled()) {
+            ensureSettingsWindowVisible();
+            return;
+        }
+        const transcriptWindow = getTranscriptWindow();
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+            return;
+        }
+        try {
+            const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } });
+            const source = sources[0];
+            if (!source || !source.thumbnail) {
+                throw new Error('No screen source available for capture.');
             }
-        });
+            const buffer = source.thumbnail.toPNG();
+            const data = buffer.toString('base64');
+            transcriptWindow.webContents.send('control-window:assistant-attach', {
+                name: `${source.name || 'screen'}.png`,
+                mime: 'image/png',
+                data
+            });
+        } catch (error) {
+            transcriptWindow.webContents.send('control-window:assistant-attach', {
+                error: error?.message || 'Failed to capture screen.'
+            });
+        }
+    });
 
-        /* Attach current screen as full screenshot */
-        attachImageShortcut = 'CommandOrControl+Shift+H';
-        shortcutManager.registerShortcut(attachImageShortcut, async () => {
-            const transcriptWindow = getTranscriptWindow();
-            if (!transcriptWindow || transcriptWindow.isDestroyed()) {
-                return;
-            }
-            try {
-                const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } });
-                const source = sources[0];
-                if (!source || !source.thumbnail) {
-                    throw new Error('No screen source available for capture.');
-                }
-                const buffer = source.thumbnail.toPNG();
-                const data = buffer.toString('base64');
-                transcriptWindow.webContents.send('control-window:assistant-attach', {
-                    name: `${source.name || 'screen'}.png`,
-                    mime: 'image/png',
-                    data
-                });
-            } catch (error) {
-                transcriptWindow.webContents.send('control-window:assistant-attach', {
-                    error: error?.message || 'Failed to capture screen.'
-                });
-            }
-        });
-    }
+    const openSettingsShortcut = 'CommandOrControl+,';
+    shortcutManager.registerShortcut(openSettingsShortcut, () => {
+        ensureSettingsWindowVisible();
+    });
 
     /* Reveal or hide the transcript shortcut guide */
     const toggleGuideShortcut = 'CommandOrControl+H';
@@ -250,13 +414,20 @@ const initializeApp = async () => {
     /* Hide or unhide the app */
     const visibilityToggleShortcut = 'CommandOrControl+Shift+B';
     shortcutManager.registerShortcut(visibilityToggleShortcut, () => {
+        if (!isAssistantEnabled()) {
+            ensureSettingsWindowVisible();
+            return;
+        }
+
+        ensureOverlayWindowsVisible();
+
         let controlWindow = getControlWindow();
         let transcriptWindow = getTranscriptWindow();
         const targets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
 
         if (!targets.length) {
-            controlWindow = getControlWindow() || windowManager.createControlWindow();
-            transcriptWindow = getTranscriptWindow() || windowManager.createTranscriptWindow();
+            controlWindow = getControlWindow();
+            transcriptWindow = getTranscriptWindow();
         }
 
         const liveTargets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
@@ -276,7 +447,7 @@ const initializeApp = async () => {
             });
 
             const allowedShortcuts = new Set(
-                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut]
+                [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut, openSettingsShortcut]
                     .filter(Boolean)
             );
             shortcutManager.unregisterAllShortcutsExcept(allowedShortcuts);
@@ -312,13 +483,11 @@ const initializeApp = async () => {
     screen.on('display-removed', positionOverlayWindows);
 
     app.on('activate', () => {
-        if (!windowManager.getControlWindow() || windowManager.getControlWindow().isDestroyed()) {
-            windowManager.createControlWindow();
+        if (assistantMissingPrerequisites()) {
+            ensureSettingsWindowVisible();
+            return;
         }
-        if (!windowManager.getTranscriptWindow() || windowManager.getTranscriptWindow().isDestroyed()) {
-            windowManager.createTranscriptWindow();
-        }
-        positionOverlayWindows();
+        ensureOverlayWindowsVisible();
     });
 
     registerDesktopCaptureHandler({ ipcMain, desktopCapturer });
@@ -396,53 +565,14 @@ const initializeApp = async () => {
         sessionWindowMap
     });
 
-    assistantInitPromise = createAssistantService(assistantConfig)
-        .then((service) => {
-            assistantService = service;
-
-            const emitToOwner = (sessionId, payload) => {
-                const windowId = assistantSessionWindowMap.get(sessionId);
-                if (!windowId) {
-                    return;
-                }
-                const targetWindow = BrowserWindow.fromId(windowId);
-                if (!targetWindow || targetWindow.isDestroyed()) {
-                    return;
-                }
-                targetWindow.webContents.send('assistant:stream', payload);
-            };
-
-            service.on('session-started', ({ sessionId, messageId }) => {
-                emitToOwner(sessionId, { type: 'started', sessionId, messageId });
-            });
-
-            service.on('session-update', (payload) => {
-                emitToOwner(payload.sessionId, { type: 'update', ...payload });
-            });
-
-            service.on('session-error', (payload) => {
-                emitToOwner(payload.sessionId, { type: 'error', ...payload });
-            });
-
-            service.on('session-stopped', (payload) => {
-                emitToOwner(payload.sessionId, { type: 'stopped', ...payload });
-                assistantSessionWindowMap.delete(payload.sessionId);
-            });
-
-            return service;
-        })
-        .catch((error) => {
-            console.error('[Assistant] Failed to initialize service', error);
-            assistantService = null;
-        });
-
     registerAssistantHandlers({
         ipcMain,
         BrowserWindow,
         ensureAssistantService,
         getAssistantService: () => assistantService,
         sessionWindowMap: assistantSessionWindowMap,
-        assistantConfig
+        assistantConfig,
+        getAssistantConfig: () => assistantConfig
     });
 };
 

@@ -6,7 +6,8 @@ const registerAssistantHandlers = ({
     ensureAssistantService,
     getAssistantService,
     sessionWindowMap,
-    assistantConfig
+    assistantConfig,
+    getAssistantConfig
 }) => {
     if (!ipcMain?.handle) {
         throw new Error('ipcMain.handle is required to register assistant handlers.');
@@ -22,7 +23,10 @@ const registerAssistantHandlers = ({
     });
 
     const ensureAvailable = async () => {
-        if (assistantConfig && assistantConfig.isEnabled === false) {
+        const configSnapshot = typeof getAssistantConfig === 'function'
+            ? getAssistantConfig()
+            : assistantConfig;
+        if (configSnapshot && configSnapshot.isEnabled === false) {
             return assistantDisabledError();
         }
         try {

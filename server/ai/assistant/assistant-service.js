@@ -2,10 +2,12 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { OllamaClient } = require('./providers/ollama-client');
 const { AnthropicClient } = require('./providers/anthropic-client');
+const { GptClient } = require('./providers/gpt-client');
 
 const PROVIDER_FACTORIES = {
     ollama: (config = {}) => new OllamaClient(config),
-    anthropic: (config = {}) => new AnthropicClient(config)
+    anthropic: (config = {}) => new AnthropicClient(config),
+    gpt: (config = {}) => new GptClient(config)
 };
 
 class AssistantService extends EventEmitter {

@@ -98,6 +98,8 @@ const createWindowManager = ({
     let controlWindow = null;
     let transcriptWindow = null;
     let lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
+    let settingsWindow = null;
+    let overlayVisibilitySnapshot = null;
 
     const getControlBounds = () => (controlWindow && !controlWindow.isDestroyed() ? controlWindow.getBounds() : null);
     const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
@@ -444,16 +446,146 @@ const createWindowManager = ({
         return transcriptWindow;
     };
 
-    const getControlWindow = () => controlWindow;
-    const getTranscriptWindow = () => transcriptWindow;
+    const getControlWindow = () => controlWindow && !controlWindow.isDestroyed() ? controlWindow : null;
+    const getTranscriptWindow = () => transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow : null;
+
+    const hideOverlayWindows = () => {
+        const control = getControlWindow();
+        const transcript = getTranscriptWindow();
+        overlayVisibilitySnapshot = {
+            controlVisible: Boolean(control?.isVisible?.()),
+            transcriptVisible: Boolean(transcript?.isVisible?.())
+        };
+
+        if (control) {
+            try {
+                control.hide();
+            } catch (error) {
+                console.warn('[WindowManager] Failed to hide control window', error);
+            }
+        }
+
+        if (transcript) {
+            try {
+                transcript.hide();
+            } catch (error) {
+                console.warn('[WindowManager] Failed to hide transcript window', error);
+            }
+        }
+    };
+
+    const restoreOverlayWindows = () => {
+        if (!overlayVisibilitySnapshot) {
+            overlayVisibilitySnapshot = null;
+            return;
+        }
+
+        const control = getControlWindow();
+        const transcript = getTranscriptWindow();
+
+        if (control && overlayVisibilitySnapshot.controlVisible) {
+            try {
+                if (stealthModeEnabled && typeof control.showInactive === 'function') {
+                    control.showInactive();
+                } else {
+                    control.show();
+                    if (!stealthModeEnabled) {
+                        control.focus();
+                    }
+                }
+            } catch (error) {
+                console.warn('[WindowManager] Failed to restore control window', error);
+            }
+        }
+
+        if (transcript && overlayVisibilitySnapshot.transcriptVisible) {
+            try {
+                if (stealthModeEnabled && typeof transcript.showInactive === 'function') {
+                    transcript.showInactive();
+                } else {
+                    transcript.show();
+                }
+            } catch (error) {
+                console.warn('[WindowManager] Failed to restore transcript window', error);
+            }
+        }
+
+        overlayVisibilitySnapshot = null;
+        positionOverlayWindows();
+    };
+
+    const destroySettingsWindow = () => {
+        if (!settingsWindow || settingsWindow.isDestroyed()) {
+            settingsWindow = null;
+            return;
+        }
+        try {
+            settingsWindow.close();
+        } catch (error) {
+            console.warn('[WindowManager] Failed to close settings window', error);
+        }
+    };
+
+    const getSettingsWindow = () => (settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : null);
+
+    const createSettingsWindow = () => {
+        if (settingsWindow && !settingsWindow.isDestroyed()) {
+            if (!settingsWindow.isVisible()) {
+                settingsWindow.show();
+            }
+            settingsWindow.focus();
+            return settingsWindow;
+        }
+
+        hideOverlayWindows();
+
+        settingsWindow = new BrowserWindow({
+            width: 720,
+            height: 640,
+            frame: true,
+            transparent: false,
+            resizable: true,
+            movable: true,
+            minimizable: false,
+            maximizable: false,
+            autoHideMenuBar: true,
+            show: false,
+            backgroundColor: '#1f1f1f',
+            modal: false,
+            webPreferences: {
+                preload: pathModule.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: false
+            }
+        });
+
+        settingsWindow.once('ready-to-show', () => {
+            settingsWindow?.show();
+            settingsWindow?.focus();
+        });
+
+        settingsWindow.on('closed', () => {
+            settingsWindow = null;
+            restoreOverlayWindows();
+        });
+
+        loadRendererForWindow(settingsWindow, 'settings');
+        return settingsWindow;
+    };
 
     return {
         createControlWindow,
         createTranscriptWindow,
+        createSettingsWindow,
+        destroySettingsWindow,
         positionOverlayWindows,
         moveOverlaysBy,
         getControlWindow,
         getTranscriptWindow,
+        getSettingsWindow,
+        hideOverlayWindows,
+        restoreOverlayWindows,
         clampOverlaysWithinArea,
         resolveWorkArea,
         moveStepPx,

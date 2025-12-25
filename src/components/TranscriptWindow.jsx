@@ -27,7 +27,8 @@ const SHORTCUT_SECTIONS = [
         hint: 'Navigate quickly',
         shortcuts: [
             { label: 'Move control window', combo: ['Ctrl', '↑↓'] },
-            { label: 'Scroll transcript', combo: ['Ctrl', 'Shift', '↑↓←→'] }
+            { label: 'Scroll transcript', combo: ['Ctrl', 'Shift', '↑↓←→'] },
+            { label: 'Open Settings', combo: ['Ctrl', ','] }
         ]
     }
 ];

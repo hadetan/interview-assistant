@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import ControlWindow from './components/ControlWindow';
 import TranscriptWindow from './components/TranscriptWindow';
+import SettingsWindow from './components/SettingsWindow';
 import { useTranscriptionSession } from './hooks/useTranscriptionSession';
 import './App.css';
 
@@ -8,7 +9,8 @@ const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const DEFAULT_MIME = 'audio/webm;codecs=opus';
 const WINDOW_VARIANTS = {
     CONTROL: 'control',
-    TRANSCRIPT: 'transcript'
+    TRANSCRIPT: 'transcript',
+    SETTINGS: 'settings'
 };
 
 const resolvePreferredMimeType = () => {
@@ -41,6 +43,7 @@ const preferredMimeType = resolvePreferredMimeType();
 function App() {
     const windowVariant = useMemo(() => resolveWindowVariant(), []);
     const isControlWindow = windowVariant === WINDOW_VARIANTS.CONTROL;
+    const isSettingsWindow = windowVariant === WINDOW_VARIANTS.SETTINGS;
 
     const overlayMovementHandledGlobally = useMemo(() => {
         if (typeof electronAPI?.overlay?.movementHandledGlobally === 'boolean') {
@@ -106,6 +109,10 @@ function App() {
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
     }, [overlayMovementHandledGlobally]);
+
+    if (isSettingsWindow) {
+        return <SettingsWindow />;
+    }
 
     return isControlWindow ? (
         <ControlWindow session={session} chunkTimeslice={chunkTimeslice} preferredMimeType={preferredMimeType} platform={platform} />
