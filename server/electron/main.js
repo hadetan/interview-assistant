@@ -292,12 +292,13 @@ const initializeApp = async () => {
     };
 
     const showMainExperience = () => {
-        if (!isAssistantEnabled()) {
+        if (assistantMissingPrerequisites()) {
             closePermissionWindow();
+            ensureSettingsWindowVisible();
             return false;
         }
 
-        if (assistantMissingPrerequisites()) {
+        if (!isAssistantEnabled()) {
             closePermissionWindow();
             ensureSettingsWindowVisible();
             return false;
