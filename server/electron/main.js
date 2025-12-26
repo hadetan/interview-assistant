@@ -277,6 +277,9 @@ const initializeApp = async () => {
         return true;
     };
 
+    // macOS pre-flight: always show permission/testing window before overlays.
+    let permissionPreflightComplete = permissionManager.isMac ? false : true;
+
     let emitPermissionStatus = () => {};
 
     const ensurePermissionWindowVisible = (status) => {
@@ -306,6 +309,10 @@ const initializeApp = async () => {
 
         if (permissionManager.isMac) {
             const status = permissionManager.refreshStatus();
+            if (!permissionPreflightComplete) {
+                ensurePermissionWindowVisible(status);
+                return false;
+            }
             if (!status.allGranted) {
                 ensurePermissionWindowVisible(status);
                 return false;
@@ -322,6 +329,7 @@ const initializeApp = async () => {
         permissionManager,
         sendPermissionStatus,
         onPermissionsGranted: () => {
+            permissionPreflightComplete = true;
             if (showMainExperience()) {
                 shortcutManager.registerAllShortcuts();
             }
