@@ -100,6 +100,7 @@ const createWindowManager = ({
     let lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
     let settingsWindow = null;
     let overlayVisibilitySnapshot = null;
+    let permissionWindow = null;
 
     const getControlBounds = () => (controlWindow && !controlWindow.isDestroyed() ? controlWindow.getBounds() : null);
     const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
@@ -574,20 +575,98 @@ const createWindowManager = ({
         return settingsWindow;
     };
 
+    const getPermissionWindow = () => (permissionWindow && !permissionWindow.isDestroyed() ? permissionWindow : null);
+
+    const destroyPermissionWindow = () => {
+        if (!permissionWindow || permissionWindow.isDestroyed()) {
+            permissionWindow = null;
+            return;
+        }
+        try {
+            permissionWindow.close();
+        } catch (error) {
+            console.warn('[WindowManager] Failed to close permission window', error);
+        }
+    };
+
+    const sendPermissionStatus = (status) => {
+        const target = getPermissionWindow();
+        if (!target) {
+            return;
+        }
+        try {
+            target.webContents.send('permissions:status', status);
+        } catch (error) {
+            console.warn('[WindowManager] Failed to send permission status', error);
+        }
+    };
+
+    const createPermissionWindow = () => {
+        if (permissionWindow && !permissionWindow.isDestroyed()) {
+            if (!permissionWindow.isVisible()) {
+                permissionWindow.show();
+            }
+            permissionWindow.focus();
+            return permissionWindow;
+        }
+
+        hideOverlayWindows();
+
+        permissionWindow = new BrowserWindow({
+            width: 640,
+            height: 720,
+            frame: true,
+            transparent: false,
+            resizable: true,
+            minimizable: false,
+            maximizable: false,
+            autoHideMenuBar: true,
+            show: false,
+            backgroundColor: '#0f172a',
+            title: 'Permissions Required',
+            closable: true,
+            webPreferences: {
+                preload: pathModule.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: false
+            }
+        });
+
+        permissionWindow.setFullScreenable(false);
+
+        permissionWindow.once('ready-to-show', () => {
+            permissionWindow?.show();
+            permissionWindow?.focus();
+        });
+
+        permissionWindow.on('closed', () => {
+            permissionWindow = null;
+            restoreOverlayWindows();
+        });
+
+        loadRendererForWindow(permissionWindow, 'permissions');
+        return permissionWindow;
+    };
+
     return {
         createControlWindow,
         createTranscriptWindow,
         createSettingsWindow,
         destroySettingsWindow,
+        createPermissionWindow,
+        destroyPermissionWindow,
         positionOverlayWindows,
         moveOverlaysBy,
         getControlWindow,
         getTranscriptWindow,
         getSettingsWindow,
+        getPermissionWindow,
         hideOverlayWindows,
         restoreOverlayWindows,
         clampOverlaysWithinArea,
         resolveWorkArea,
+        sendPermissionStatus,
         moveStepPx,
         windowVerticalGap,
         windowTopMargin

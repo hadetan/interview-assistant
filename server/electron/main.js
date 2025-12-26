@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage, systemPreferences } = require('electron');
 const loadTranscriptionConfig = require('../config/transcription');
 const loadAssistantConfig = require('../config/assistant');
 const { createTranscriptionService } = require('../ai/transcription');
@@ -19,6 +19,8 @@ const { registerAssistantHandlers } = require('./ipc/assistant');
 const { createSecureStore } = require('./secure-store');
 const { createSettingsStore } = require('./settings-store');
 const { registerSettingsHandlers } = require('./ipc/settings');
+const { createPermissionManager } = require('./permissions');
+const { registerPermissionHandlers } = require('./ipc/permissions');
 
 loadEnv();
 
@@ -94,6 +96,7 @@ const windowManager = createWindowManager({
 });
 
 const shortcutManager = createShortcutManager({ globalShortcut });
+const permissionManager = createPermissionManager({ systemPreferences, platform: process.platform });
 
 const ensureTranscriptionService = async () => {
     if (transcriptionInitPromise) {
@@ -232,10 +235,14 @@ const initializeApp = async () => {
         getControlWindow,
         getTranscriptWindow,
         getSettingsWindow,
+        getPermissionWindow,
         createControlWindow,
         createTranscriptWindow,
         createSettingsWindow,
+        createPermissionWindow,
         destroySettingsWindow,
+        destroyPermissionWindow,
+        sendPermissionStatus,
         moveStepPx
     } = windowManager;
 
@@ -257,7 +264,7 @@ const initializeApp = async () => {
 
     const ensureOverlayWindowsVisible = () => {
         if (!isAssistantEnabled()) {
-            return;
+            return false;
         }
         if (!getControlWindow()) {
             createControlWindow();
@@ -267,13 +274,73 @@ const initializeApp = async () => {
         }
         positionOverlayWindows();
         destroySettingsWindow();
+        return true;
     };
 
-    if (assistantMissingPrerequisites()) {
-        ensureSettingsWindowVisible();
-    } else {
+    // macOS pre-flight: always show permission/testing window before overlays.
+    let permissionPreflightComplete = permissionManager.isMac ? false : true;
+
+    let emitPermissionStatus = () => {};
+
+    const ensurePermissionWindowVisible = (status) => {
+        const currentStatus = status || permissionManager.refreshStatus();
+        destroySettingsWindow();
+        createPermissionWindow();
+        emitPermissionStatus(currentStatus);
+        return getPermissionWindow();
+    };
+
+    const closePermissionWindow = () => {
+        destroyPermissionWindow();
+    };
+
+    const showMainExperience = () => {
+        if (assistantMissingPrerequisites()) {
+            closePermissionWindow();
+            ensureSettingsWindowVisible();
+            return false;
+        }
+
+        if (!isAssistantEnabled()) {
+            closePermissionWindow();
+            ensureSettingsWindowVisible();
+            return false;
+        }
+
+        if (permissionManager.isMac) {
+            const status = permissionManager.refreshStatus();
+            if (!permissionPreflightComplete) {
+                ensurePermissionWindowVisible(status);
+                return false;
+            }
+            if (!status.allGranted) {
+                ensurePermissionWindowVisible(status);
+                return false;
+            }
+        }
+
+        closePermissionWindow();
         ensureOverlayWindowsVisible();
+        return true;
+    };
+
+    const permissionIpcRegistration = registerPermissionHandlers({
+        ipcMain,
+        permissionManager,
+        sendPermissionStatus,
+        onPermissionsGranted: () => {
+            permissionPreflightComplete = true;
+            if (showMainExperience()) {
+                shortcutManager.registerAllShortcuts();
+            }
+        }
+    });
+
+    if (permissionIpcRegistration?.emitStatusToWindow) {
+        emitPermissionStatus = permissionIpcRegistration.emitStatusToWindow;
     }
+
+    showMainExperience();
 
     registerSettingsHandlers({
         ipcMain,
@@ -284,8 +351,9 @@ const initializeApp = async () => {
         onSettingsApplied: async () => {
             const updatedConfig = await synchronizeAssistantConfiguration();
             if (updatedConfig && updatedConfig.isEnabled) {
-                ensureOverlayWindowsVisible();
-                shortcutManager.registerAllShortcuts();
+                if (showMainExperience()) {
+                    shortcutManager.registerAllShortcuts();
+                }
             }
         }
     });
@@ -295,6 +363,9 @@ const initializeApp = async () => {
     shortcutManager.registerShortcut(toggleShortcut, () => {
         if (!isAssistantEnabled()) {
             ensureSettingsWindowVisible();
+            return;
+        }
+        if (!showMainExperience()) {
             return;
         }
         const targets = [getControlWindow(), getTranscriptWindow()]
@@ -418,8 +489,9 @@ const initializeApp = async () => {
             ensureSettingsWindowVisible();
             return;
         }
-
-        ensureOverlayWindowsVisible();
+        if (!showMainExperience()) {
+            return;
+        }
 
         let controlWindow = getControlWindow();
         let transcriptWindow = getTranscriptWindow();
@@ -483,11 +555,7 @@ const initializeApp = async () => {
     screen.on('display-removed', positionOverlayWindows);
 
     app.on('activate', () => {
-        if (assistantMissingPrerequisites()) {
-            ensureSettingsWindowVisible();
-            return;
-        }
-        ensureOverlayWindowsVisible();
+        showMainExperience();
     });
 
     registerDesktopCaptureHandler({ ipcMain, desktopCapturer });

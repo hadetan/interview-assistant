@@ -1,24 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
 import { TRANSCRIPTION_SOURCE_TYPES as SOURCE_TYPES } from './useTranscriptionSession.js';
+import { DEFAULT_MIME, openDesktopCapture } from '../utils/capturePipeline.js';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
-const DEFAULT_MIME = 'audio/webm;codecs=opus';
-
 const buildRecorderOptions = (mimeType) => (mimeType ? { mimeType } : {});
-const buildVideoConstraints = (sourceId) => ({
-    mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: sourceId
-    }
-});
-const buildAudioConstraints = (sourceId, platform) => {
-    return {
-        mandatory: {
-            chromeMediaSource: 'desktop',
-            chromeMediaSourceId: sourceId
-        }
-    };
-};
 
 export function useRecorder({
     chunkTimeslice,
@@ -327,65 +312,42 @@ export function useRecorder({
     }, [preferredMimeType, sessionApi, stopMicRecorder]);
 
     const startStreamingWithSource = useCallback(async (source, stopToken) => {
-        const sourceId = source?.id;
-        if (!sourceId) {
-            sessionApi.setStatus('No valid source selected.');
-            return { ok: false, reason: 'invalid-source' };
-        }
-
         const token = typeof stopToken === 'number' ? stopToken : stopSignalRef.current;
         const isCancelled = () => stopSignalRef.current !== token;
 
         setIsSelectingSource(true);
         sessionApi.setStatus('Preparing capture stream…');
 
-        const videoConstraints = buildVideoConstraints(sourceId);
-        const audioConstraints = buildAudioConstraints(sourceId, platform);
-
-        let stream;
-        let audioStream;
+        let capture;
         try {
             if (isCancelled()) {
                 return { ok: false, reason: 'cancelled' };
             }
 
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: audioConstraints,
-                video: videoConstraints
-            });
+            capture = await openDesktopCapture({ electronAPI, source, types: ['screen', 'window'] });
 
             if (isCancelled()) {
-                stream.getTracks().forEach((track) => track.stop());
-                captureStreamRef.current = null;
+                capture?.cleanup?.();
                 return { ok: false, reason: 'cancelled' };
             }
 
-            captureStreamRef.current = stream;
-            const audioTracks = stream.getAudioTracks();
-            if (audioTracks.length === 0) {
-                stream.getTracks().forEach((track) => track.stop());
-                captureStreamRef.current = null;
-                sessionApi.setStatus('No system audio track detected.');
-                return { ok: false, reason: 'no-audio-track' };
-            }
-
-            audioStream = new MediaStream([audioTracks[0]]);
+            captureStreamRef.current = capture.stream;
 
             const startResult = await sessionApi.startTranscriptionSession({
-                sourceName: source.name || source.id,
+                sourceName: (source && (source.name || source.id)) || capture.source?.id || 'Desktop',
                 platform,
                 sourceType: SOURCE_TYPES.SYSTEM
             });
 
             if (!startResult?.sessionId) {
                 sessionApi.setStatus('Transcription unavailable: session missing identifier.');
+                capture?.cleanup?.();
                 await stopCapture();
                 return { ok: false, reason: 'session-start-failed' };
             }
 
             if (startResult.cancelled || isCancelled()) {
-                stream.getTracks().forEach((track) => track.stop());
-                captureStreamRef.current = null;
+                capture?.cleanup?.();
                 return { ok: false, reason: 'cancelled' };
             }
 
@@ -393,15 +355,14 @@ export function useRecorder({
 
             const recorderOptions = buildRecorderOptions(preferredMimeType);
             try {
-                mediaRecorderRef.current = new MediaRecorder(audioStream, recorderOptions);
+                mediaRecorderRef.current = new MediaRecorder(capture.audioStream, recorderOptions);
             } catch (error) {
                 console.warn('Preferred mime type failed, falling back to default', recorderOptions, error);
                 if (isCancelled()) {
-                    stream.getTracks().forEach((track) => track.stop());
-                    captureStreamRef.current = null;
+                    capture?.cleanup?.();
                     return { ok: false, reason: 'cancelled' };
                 }
-                mediaRecorderRef.current = new MediaRecorder(audioStream);
+                mediaRecorderRef.current = new MediaRecorder(capture.audioStream);
             }
 
             const recorder = mediaRecorderRef.current;
@@ -414,6 +375,7 @@ export function useRecorder({
             });
             recorder.addEventListener('stop', () => {
                 mediaRecorderRef.current = null;
+                capture?.cleanup?.();
                 if (captureStreamRef.current) {
                     captureStreamRef.current.getTracks().forEach((track) => track.stop());
                     captureStreamRef.current = null;
@@ -445,6 +407,7 @@ export function useRecorder({
                 stack: error?.stack
             });
             sessionApi.setStatus(`Failed to capture system audio: ${error?.message || error}`);
+            capture?.cleanup?.();
             await stopCapture();
             return { ok: false, error, reason: 'error' };
         } finally {

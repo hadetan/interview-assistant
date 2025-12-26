@@ -169,5 +169,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
             ipcRenderer.send('overlay:move-direction', { direction: safeDirection });
         },
         movementHandledGlobally: true
+    },
+    permissions: {
+        getStatus: () => ipcRenderer.invoke('permissions:get-status'),
+        refreshStatus: () => ipcRenderer.invoke('permissions:refresh-status'),
+        acknowledge: () => ipcRenderer.invoke('permissions:acknowledge'),
+        onStatus: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = (_event, status) => callback(status);
+            ipcRenderer.on('permissions:status', listener);
+            return () => ipcRenderer.removeListener('permissions:status', listener);
+        }
     }
 });
