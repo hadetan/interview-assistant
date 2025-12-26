@@ -233,50 +233,37 @@ export default function PermissionWindow() {
     const handleRequest = useCallback(async () => {
         setIsRequesting(true);
         setLastError('');
-        const errors = [];
         try {
-            // 1) Request system audio first (may surface Screen Recording dialog).
+            const errors = [];
+            if (shouldRequestMic) {
+                try {
+                    await requestMicrophoneAccess();
+                } catch (error) {
+                    errors.push(error?.message || 'Microphone permission request failed.');
+                }
+            }
+            if (shouldRequestScreen) {
+                try {
+                    await requestScreenCaptureAccess();
+                } catch (error) {
+                    errors.push(error?.message || 'Screen capture permission request failed.');
+                }
+            }
             if (shouldRequestSystemAudio) {
                 try {
                     await requestSystemAudioAccess();
                 } catch (error) {
                     errors.push(error?.message || 'System audio permission request failed.');
-                } finally {
-                    await refreshStatus();
                 }
             }
-
-            // 2) Re-check screen permission and request only if still needed.
-            let nextStatus = await refreshStatus();
-            if (shouldRequestPermission(nextStatus, 'screen')) {
-                try {
-                    await requestScreenCaptureAccess();
-                } catch (error) {
-                    errors.push(error?.message || 'Screen capture permission request failed.');
-                } finally {
-                    await refreshStatus();
-                }
-            }
-
-            // 3) Re-check microphone permission and request only if still needed.
-            nextStatus = await refreshStatus();
-            if (shouldRequestPermission(nextStatus, 'microphone')) {
-                try {
-                    await requestMicrophoneAccess();
-                } catch (error) {
-                    errors.push(error?.message || 'Microphone permission request failed.');
-                } finally {
-                    await refreshStatus();
-                }
-            }
-
             if (errors.length) {
                 setLastError(errors.join(' '));
             }
         } finally {
+            await refreshStatus();
             setIsRequesting(false);
         }
-    }, [refreshStatus, shouldRequestSystemAudio]);
+    }, [refreshStatus, shouldRequestMic, shouldRequestScreen, shouldRequestSystemAudio]);
 
     const statusList = useMemo(() => ([
         {
@@ -345,8 +332,8 @@ export default function PermissionWindow() {
                     disabled={isRequesting || !hasMissing}
                     aria-label={
                         isRequesting
-                            ? 'Requesting system audio, screen recording, and microphone permissions'
-                            : 'Request system audio, screen recording, and microphone permissions'
+                            ? 'Requesting microphone and screen recording permissions'
+                            : 'Request microphone and screen recording permissions'
                     }
                 >
                     {isRequesting ? 'Requesting…' : 'Request Permissions'}
