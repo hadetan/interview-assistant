@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import TranscriptPreview from './TranscriptPreview';
 import { clampOpacity, TRANSCRIPT_OPACITY_OPTIONS } from '../utils/transcriptOpacity';
 import './css/SettingsWindow.css';
-import { DEFAULT_TRANSCRIPT_OPACITY } from '../utils/const';
+import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 

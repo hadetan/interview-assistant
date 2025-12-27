@@ -38,6 +38,7 @@ let transcriptionService = null;
 let transcriptionInitPromise = null;
 let transcriptionConfig = null;
 const sessionWindowMap = new Map();
+const activeTranscriptionSessions = new Set();
 let assistantService = null;
 let assistantInitPromise = null;
 let assistantConfig = null;
@@ -262,6 +263,8 @@ const initializeApp = async () => {
         return createSettingsWindow();
     };
 
+    const isTranscriptionActive = () => activeTranscriptionSessions.size > 0;
+
     const ensureOverlayWindowsVisible = () => {
         if (!isAssistantEnabled()) {
             return false;
@@ -464,6 +467,10 @@ const initializeApp = async () => {
 
     const openSettingsShortcut = 'CommandOrControl+,';
     shortcutManager.registerShortcut(openSettingsShortcut, () => {
+        if (isTranscriptionActive()) {
+            console.log('[Shortcut] Settings shortcut blocked while transcription is active.');
+            return;
+        }
         ensureSettingsWindowVisible();
     });
 
@@ -597,6 +604,9 @@ const initializeApp = async () => {
             };
 
             service.on('session-started', ({ sessionId, sourceName, sourceType }) => {
+                if (sessionId) {
+                    activeTranscriptionSessions.add(sessionId);
+                }
                 emitToOwner(sessionId, { type: 'started', sessionId, sourceName, sourceType });
                 emitToTranscriptOverlay({ type: 'started', sessionId, sourceName, sourceType });
             });
@@ -625,6 +635,9 @@ const initializeApp = async () => {
                 emitToOwner(payload.sessionId, { type: 'stopped', ...payload });
                 emitToTranscriptOverlay({ type: 'stopped', ...payload });
                 sessionWindowMap.delete(payload.sessionId);
+                if (payload?.sessionId) {
+                    activeTranscriptionSessions.delete(payload.sessionId);
+                }
             });
 
             return service;

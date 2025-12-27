@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { DEFAULT_TRANSCRIPT_OPACITY } = require('../../src/utils/const');
+const { DEFAULT_TRANSCRIPT_OPACITY } = require('../../utils/const');
 
 const SETTINGS_FILENAME = 'settings.json';
 const DEFAULT_GENERAL_SETTINGS = {
