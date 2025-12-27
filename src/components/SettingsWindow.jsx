@@ -420,6 +420,7 @@ function SettingsWindow() {
 
                 <div className="settings-field settings-opacity-field">
                     <span className="settings-field-label" id="transcript-opacity-label">Opacity level</span>
+                    <small className="settings-hint">Higher value reduces transparency</small>
                     <div
                         className="opacity-options"
                         role="group"
@@ -440,7 +441,6 @@ function SettingsWindow() {
                             );
                         })}
                     </div>
-                    <small className="settings-hint">1.00 removes transparency entirely.</small>
                 </div>
                 <TranscriptPreview opacity={transcriptOpacity} />
             </div>

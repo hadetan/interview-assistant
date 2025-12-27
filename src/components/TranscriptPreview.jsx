@@ -23,7 +23,7 @@ const PREVIEW_MESSAGES = [
     {
         id: 'preview-ai',
         side: 'right',
-        text: '\n```js\nexport function debounce(fn, delay = 200) {\n    let timer = null;\n    return (...args) => {\n        if (timer) {\n            clearTimeout(timer);\n        }\n        timer = setTimeout(() => {\n            fn(...args);\n            timer = null;\n        }, delay);\n    };\n}\n```',
+        text: 'Here\'s a debounce helper:```js\nexport function debounce(fn, delay = 200) {\n    let timer = null;\n    return (...args) => {\n        if (timer) {\n            clearTimeout(timer);\n        }\n        timer = setTimeout(() => {\n            fn(...args);\n            timer = null;\n        }, delay);\n    };\n}\n```',
         isFinal: true,
         sourceType: 'assistant',
         sent: true
