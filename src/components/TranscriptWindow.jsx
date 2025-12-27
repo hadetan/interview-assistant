@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatBubble from './ChatBubble';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { getAltModifierKey, getPrimaryModifierKey } from '../utils/osDetection';
 import { clampOpacity, computeTranscriptOpacityVars } from '../utils/transcriptOpacity';
 import './css/TranscriptWindow.css';
 import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
+import { useRecorder } from '../hooks/useRecorder';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const SCROLL_STEP_PX = 280;
 
-export default function TranscriptWindow({ session }) {
+export default function TranscriptWindow({ session, chunkTimeslice, preferredMimeType, platform }) {
     const {
         messages,
         isStreaming,
@@ -17,14 +18,104 @@ export default function TranscriptWindow({ session }) {
         attachAssistantEvents,
         clearTranscript,
         requestAssistantResponse,
-        attachImageToDraft
+        attachImageToDraft,
+        startTranscriptionSession,
+        teardownSession,
+        getSessionId,
+        startSourceSession,
+        stopSourceSession,
+        isSourceStreaming
     } = session;
+
+    const sessionApi = useMemo(() => ({
+        attachTranscriptionEvents,
+        startTranscriptionSession,
+        teardownSession,
+        clearTranscript,
+        getSessionId,
+        startSourceSession,
+        stopSourceSession,
+        isSourceStreaming
+    }), [
+        attachTranscriptionEvents,
+        clearTranscript,
+        getSessionId,
+        isSourceStreaming,
+        startSourceSession,
+        startTranscriptionSession,
+        stopSourceSession,
+        teardownSession
+    ]);
+
+    const {
+        isSelectingSource,
+        isRecording,
+        startRecording,
+        stopRecording,
+        toggleMic,
+        mic
+    } = useRecorder({
+        chunkTimeslice,
+        platform,
+        preferredMimeType,
+        sessionApi
+    });
+
     const { transcriptRef, scrollBy, resetScroll } = useTranscriptScroll({ messages });
     const [isGuideVisible, setGuideVisible] = useState(false);
     const [transcriptOpacity, setTranscriptOpacity] = useState(DEFAULT_TRANSCRIPT_OPACITY);
     const primaryModifierKey = getPrimaryModifierKey();
     const altModifierKey = getAltModifierKey();
     const opacityStyles = useMemo(() => computeTranscriptOpacityVars(transcriptOpacity), [transcriptOpacity]);
+
+    const streamingStateRef = useRef(false);
+    const selectingSourceRef = useRef(false);
+
+    useEffect(() => {
+        streamingStateRef.current = isRecording;
+    }, [isRecording]);
+
+    useEffect(() => {
+        selectingSourceRef.current = isSelectingSource;
+    }, [isSelectingSource]);
+
+    const isMicButtonDisabled = useMemo(() => {
+        if (!isRecording) {
+            return true;
+        }
+        return mic.isPending;
+    }, [isRecording, mic]);
+
+    useEffect(() => {
+        if (mic.error) {
+            console.error(mic.error);
+        }
+    }, [mic.error]);
+
+    const handleMicToggle = useCallback(async () => {
+        if (isMicButtonDisabled) {
+            return;
+        }
+        try {
+            await toggleMic();
+        } catch (error) {
+            console.error('Failed to toggle microphone capture', error);
+        }
+    }, [isMicButtonDisabled, toggleMic]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return () => { };
+        }
+        const handleBeforeUnload = () => {
+            stopRecording().catch(() => { });
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            stopRecording().catch(() => { });
+        };
+    }, [stopRecording]);
 
     const shortcutSections = useMemo(() => ([
         {
@@ -47,7 +138,7 @@ export default function TranscriptWindow({ session }) {
             heading: 'Window',
             hint: 'Navigate quickly',
             shortcuts: [
-                { label: 'Move control window', combo: [primaryModifierKey, 'Arrow ↑↓'] },
+                { label: 'Move transcript window', combo: [primaryModifierKey, 'Arrow ↑↓'] },
                 { label: 'Scroll transcript', combo: [primaryModifierKey, 'Shift', 'Arrow ←↑↓→'] },
                 { label: 'Hide/unhide app', combo: [primaryModifierKey, 'Shift', 'B'] }
             ]
@@ -121,6 +212,24 @@ export default function TranscriptWindow({ session }) {
 
         const unsubscribes = [];
 
+        if (typeof api.onToggleCapture === 'function') {
+            unsubscribes.push(api.onToggleCapture(async () => {
+                try {
+                    if (streamingStateRef.current || selectingSourceRef.current) {
+                        await stopRecording();
+                    } else {
+                        await startRecording();
+                    }
+                } catch (error) {
+                    console.error('Failed to toggle capture via shortcut', error);
+                }
+            }));
+        }
+        if (typeof api.onToggleMic === 'function') {
+            unsubscribes.push(api.onToggleMic(() => {
+                handleMicToggle();
+            }));
+        }
         if (typeof api.onToggleGuide === 'function') {
             unsubscribes.push(api.onToggleGuide(() => {
                 toggleGuide();
@@ -159,7 +268,16 @@ export default function TranscriptWindow({ session }) {
                 }
             });
         };
-    }, [attachImageToDraft, handleClear, requestAssistantResponse, scrollBy, toggleGuide]);
+    }, [
+        attachImageToDraft,
+        handleClear,
+        handleMicToggle,
+        requestAssistantResponse,
+        scrollBy,
+        startRecording,
+        stopRecording,
+        toggleGuide
+    ]);
 
     useEffect(() => {
         if (electronAPI?.controlWindow?.onToggleGuide) {
@@ -183,12 +301,40 @@ export default function TranscriptWindow({ session }) {
 
     const guideClassName = `transcript-guide${isGuideVisible ? '' : ' transcript-guide-collapsed'}`;
 
+    const captureActive = isRecording;
+    const capturePending = isSelectingSource && !isRecording;
+    const captureStateClass = captureActive ? 'state-dot-active' : (capturePending ? 'state-dot-pending' : '');
+
+    const micActive = mic.isActive && !mic.isPending;
+    const micPending = mic.isPending && mic.pendingAction === 'starting';
+    const micStateClass = micActive ? 'state-dot-active' : (micPending ? 'state-dot-pending' : '');
+
     return (
         <div className="transcript-shell" style={opacityStyles}>
             <section className="transcript-panel" aria-live="polite">
                 <header className="transcript-heading">
-                    <span className={`state-dot ${isStreaming ? 'state-dot-live' : ''}`} aria-hidden="true" />
-                    <span className="heading-chip">{isStreaming ? 'Streaming' : 'Idle'}</span>
+                    <div className="heading-status-container">
+                        <div className="heading-status-item">
+                            <span className={`state-dot ${captureStateClass}`} aria-hidden="true" />
+                            <span className="heading-chip">
+                                {
+                                    !captureActive && !capturePending && "Capture system audio" ||
+                                    capturePending && !captureActive && "Starting system capture" ||
+                                    !capturePending && captureActive && "Streaming system audio"
+                                }
+                            </span>
+                        </div>
+                        <div className="heading-status-item" title={micActive ? 'Mic active' : (micPending ? 'Mic starting…' : 'Mic idle')}>
+                            <span className={`state-dot ${micStateClass}`} aria-hidden="true" />
+                            <span className="heading-chip">
+                                {
+                                    !micActive && !micPending && "Capture mic" ||
+                                    micPending && !micActive && "Starting mic" ||
+                                    !micPending && micActive && "Streaming mic"
+                                }
+                            </span>
+                        </div>
+                    </div>
                     <span className="heading-shortcut-hint">
                         <span className="guide-shortcut-keys">
                             {quitShortcutCombo.map((key) => (

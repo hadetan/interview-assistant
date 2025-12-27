@@ -35,15 +35,36 @@
     box-shadow: 0 0 12px rgba(148, 163, 184, 0.5);
 }
 
-.state-dot-live {
-    background: rgba(74, 222, 128, 0.95);
-    box-shadow: 0 0 18px rgba(74, 222, 128, 0.7);
+.state-dot-active {
+    background: rgba(34, 197, 94, 0.95);
+    box-shadow: 0 0 18px rgba(34, 197, 94, 0.7);
+}
+
+.state-dot-pending {
+    background: rgba(250, 204, 21, 0.95);
+    box-shadow: 0 0 14px rgba(250, 204, 21, 0.6);
 }
 
 .heading-chip {
-    font-size: 0.75rem;
+    font-size: 0.65rem;
     letter-spacing: 0.3em;
     color: rgba(255, 255, 255, 0.85);
+}
+
+.heading-status-container {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.heading-status-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.45);
 }
 
 .heading-shortcut-hint {
@@ -55,6 +76,45 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+}
+
+.transcript-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    pointer-events: auto;
+}
+
+.control-strip {
+    display: inline-flex;
+    gap: 0.5rem;
+    padding: 0.35rem 0.45rem;
+    border-radius: 999px;
+    background: rgba(3, 7, 18, 0.1);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.control-button {
+    border: none;
+    border-radius: 999px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 0.55rem 1.35rem;
+    cursor: pointer;
+    transition: opacity 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+    pointer-events: auto;
+}
+
+.control-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.control-button:not(:disabled):hover {
+    transform: translateY(-1px);
 }
 
 .heading-status {
@@ -326,6 +386,20 @@
     .transcript-panel {
         border-radius: 20px;
         padding: 1rem;
+    }
+
+    .transcript-controls {
+        gap: 0.4rem;
+    }
+
+    .control-strip {
+        width: 100%;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .control-button {
+        flex: 1;
     }
 
     .transcript-body {

@@ -200,7 +200,6 @@ export function useRecorder({
             recorder.addEventListener('dataavailable', handleMicChunk);
             recorder.addEventListener('error', async (event) => {
                 console.error('Microphone recorder error', event.error);
-                sessionApi.setStatus?.(`Mic recorder error: ${event.error?.message || event.error}`);
                 setMicError(event.error?.message || 'Mic recorder error');
                 await stopMicRecorder({ keepStream: true, stopSession: true });
                 setIsMicPending(false);
@@ -212,8 +211,6 @@ export function useRecorder({
             micChunkSequenceRef.current = 0;
             recorder.start(chunkTimeslice);
             setIsMicActive(true);
-            const systemStreaming = sessionApi.isSourceStreaming?.(SOURCE_TYPES.SYSTEM);
-            sessionApi.setStatus?.(systemStreaming ? 'Capturing system + mic audio…' : 'Capturing microphone audio…');
             return { ok: true };
         } catch (error) {
             console.error('Failed to enable microphone capture', error);
@@ -255,8 +252,6 @@ export function useRecorder({
         setMicPendingAction('stopping');
         try {
             await stopMicRecorder({ keepStream: true, stopSession: true });
-            const systemStreaming = sessionApi.isSourceStreaming?.(SOURCE_TYPES.SYSTEM);
-            sessionApi.setStatus?.(systemStreaming ? 'Capturing system audio…' : 'Idle');
             setMicError('');
             return { ok: true };
         } catch (error) {
@@ -281,6 +276,23 @@ export function useRecorder({
         }
         return startMicProcessing();
     }, [isMicActive, isMicPending, isRecording, startMicProcessing, stopMicProcessing]);
+
+    const autoStartMicIfNeeded = useCallback(() => {
+        if (isMicActive || isMicPending) {
+            return null;
+        }
+        return startMicProcessing()
+            .then((result) => {
+                if (!result?.ok && result?.reason !== 'system-inactive') {
+                    console.warn('Automatic microphone start unsuccessful', result);
+                }
+                return result;
+            })
+            .catch((error) => {
+                console.error('Failed to auto-start microphone capture', error);
+                return { ok: false, error };
+            });
+    }, [isMicActive, isMicPending, startMicProcessing]);
 
     const stopCapture = useCallback(async () => {
         stopSignalRef.current += 1;
@@ -316,7 +328,6 @@ export function useRecorder({
         const isCancelled = () => stopSignalRef.current !== token;
 
         setIsSelectingSource(true);
-        sessionApi.setStatus('Preparing capture stream…');
 
         let capture;
         try {
@@ -340,7 +351,6 @@ export function useRecorder({
             });
 
             if (!startResult?.sessionId) {
-                sessionApi.setStatus('Transcription unavailable: session missing identifier.');
                 capture?.cleanup?.();
                 await stopCapture();
                 return { ok: false, reason: 'session-start-failed' };
@@ -370,7 +380,6 @@ export function useRecorder({
             recorder.addEventListener('dataavailable', handleChunk);
             recorder.addEventListener('error', async (event) => {
                 console.error('MediaRecorder error', event.error);
-                sessionApi.setStatus(`Recorder error: ${event.error?.message || event.error}`);
                 await stopCapture();
             });
             recorder.addEventListener('stop', () => {
@@ -395,7 +404,6 @@ export function useRecorder({
             }
 
             sessionApi.clearTranscript();
-            sessionApi.setStatus('Capturing system audio…');
             setIsRecording(true);
             return { ok: true };
         } catch (error) {
@@ -406,7 +414,6 @@ export function useRecorder({
                 code: error?.code,
                 stack: error?.stack
             });
-            sessionApi.setStatus(`Failed to capture system audio: ${error?.message || error}`);
             capture?.cleanup?.();
             await stopCapture();
             return { ok: false, error, reason: 'error' };
@@ -417,39 +424,62 @@ export function useRecorder({
 
     const startRecording = useCallback(async () => {
         if (!electronAPI?.getDesktopSources) {
-            sessionApi.setStatus('Desktop capture API unavailable in preload.');
+            console.error('Desktop capture API unavailable in preload.');
             return;
         }
         const stopToken = stopSignalRef.current;
+        const micAlreadyRunning = isMicActive || isMicPending;
         setIsSelectingSource(true);
         setIsMicReady(false);
         setIsMicPending(false);
         setMicPendingAction(null);
         setMicError('');
-        sessionApi.setStatus('Requesting capture sources…');
+        const shouldAutoStartMic = !micAlreadyRunning;
+        const autoMicPromise = shouldAutoStartMic ? autoStartMicIfNeeded() : null;
+        const rollbackAutoMic = async () => {
+            if (!shouldAutoStartMic) {
+                return;
+            }
+            if (autoMicPromise) {
+                try {
+                    await autoMicPromise;
+                } catch (_error) {
+                    // already logged in auto start helper
+                }
+            }
+            await stopMicProcessing();
+        };
         try {
             const sources = await electronAPI.getDesktopSources({ types: ['screen', 'window'] });
             if (!sources?.length) {
                 setIsSelectingSource(false);
-                sessionApi.setStatus('No sources returned.');
+                console.warn('No capture sources returned.');
+                await rollbackAutoMic();
                 return;
             }
             const result = await startStreamingWithSource(sources[0], stopToken);
-            if (!result?.ok && result?.reason === 'cancelled') {
-                sessionApi.setStatus('Idle');
+            if (!result?.ok) {
+                if (result?.reason === 'cancelled') {
+                    console.info('Capture start cancelled.');
+                }
+                await rollbackAutoMic();
             }
         } catch (error) {
             console.error('Failed to list sources', error);
             setIsSelectingSource(false);
-            sessionApi.setStatus(`Failed to list sources: ${error?.message || 'Unknown error'}`);
+            await rollbackAutoMic();
         }
-    }, [sessionApi, startStreamingWithSource]);
+    }, [
+        autoStartMicIfNeeded,
+        isMicActive,
+        isMicPending,
+        startStreamingWithSource,
+        stopMicProcessing
+    ]);
 
     const stopRecording = useCallback(async () => {
-        sessionApi.setStatus('Stopping capture…');
         await stopCapture();
-        sessionApi.setStatus('Idle');
-    }, [sessionApi, stopCapture]);
+    }, [stopCapture]);
 
     return {
         isSelectingSource,

@@ -145,7 +145,6 @@ function createSessionApi() {
 
     return {
         getSessionId: (sourceType) => sessions.get(sourceType) || null,
-        setStatus: () => {},
         startTranscriptionSession: async ({ sourceType }) => {
             const sessionId = `${sourceType}-session`;
             sessions.set(sourceType, sessionId);
@@ -200,7 +199,7 @@ async function renderHook(options) {
     return { hookRef, unmount };
 }
 
-test('startRecording does not prewarm microphone stream', async () => {
+test('startRecording auto-starts microphone stream alongside system capture', async () => {
     resetMediaMocks();
     const sessionApi = createSessionApi();
     const { hookRef, unmount } = await renderHook({
@@ -214,8 +213,10 @@ test('startRecording does not prewarm microphone stream', async () => {
         await hookRef.current.startRecording();
     });
 
-    assert.equal(userMediaCalls.length, 1);
-    const [systemConstraints] = userMediaCalls;
+    assert.equal(userMediaCalls.length, 2);
+    const [micConstraints, systemConstraints] = userMediaCalls;
+    assert.equal(micConstraints.audio, true);
+    assert.equal(micConstraints.video, false);
     assert.ok(systemConstraints.audio);
     assert.notEqual(systemConstraints.audio, true);
 
@@ -226,7 +227,7 @@ test('startRecording does not prewarm microphone stream', async () => {
     await unmount();
 });
 
-test('microphone stream initializes on demand and reuses existing stream', async () => {
+test('microphone stream starts with recording and reuses existing stream on re-enable', async () => {
     resetMediaMocks();
     const sessionApi = createSessionApi();
     const { hookRef, unmount } = await renderHook({
@@ -240,7 +241,12 @@ test('microphone stream initializes on demand and reuses existing stream', async
         await hookRef.current.startRecording();
     });
 
-    assert.equal(userMediaCalls.length, 1);
+    assert.equal(userMediaCalls.length, 2);
+    const [micConstraints, systemConstraints] = userMediaCalls;
+    assert.equal(micConstraints.audio, true);
+    assert.equal(micConstraints.video, false);
+    assert.ok(systemConstraints.audio);
+    assert.notEqual(systemConstraints.audio, true);
 
     await act(async () => {
         const result = await hookRef.current.toggleMic();
@@ -248,9 +254,6 @@ test('microphone stream initializes on demand and reuses existing stream', async
     });
 
     assert.equal(userMediaCalls.length, 2);
-    const micConstraints = userMediaCalls[1];
-    assert.equal(micConstraints.audio, true);
-    assert.equal(micConstraints.video, false);
 
     await act(async () => {
         const result = await hookRef.current.toggleMic();

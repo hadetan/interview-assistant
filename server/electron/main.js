@@ -233,11 +233,9 @@ const initializeApp = async () => {
     const {
         moveOverlaysBy,
         positionOverlayWindows,
-        getControlWindow,
         getTranscriptWindow,
         getSettingsWindow,
         getPermissionWindow,
-        createControlWindow,
         createTranscriptWindow,
         createSettingsWindow,
         createPermissionWindow,
@@ -246,6 +244,28 @@ const initializeApp = async () => {
         sendPermissionStatus,
         moveStepPx
     } = windowManager;
+
+    const getActiveTranscriptWindow = () => {
+        const transcript = getTranscriptWindow();
+        if (!transcript || transcript.isDestroyed()) {
+            return null;
+        }
+        return transcript;
+    };
+
+    const sendToTranscriptWindow = (channel, payload) => {
+        const transcript = getActiveTranscriptWindow();
+        if (!transcript) {
+            return false;
+        }
+        try {
+            transcript.webContents.send(channel, payload);
+            return true;
+        } catch (error) {
+            console.warn(`[Overlay] Failed to send ${channel}`, error);
+            return false;
+        }
+    };
 
     const isAssistantEnabled = () => assistantConfig?.isEnabled !== false;
     const assistantMissingPrerequisites = () => Boolean(
@@ -268,9 +288,6 @@ const initializeApp = async () => {
     const ensureOverlayWindowsVisible = () => {
         if (!isAssistantEnabled()) {
             return false;
-        }
-        if (!getControlWindow()) {
-            createControlWindow();
         }
         if (!getTranscriptWindow()) {
             createTranscriptWindow();
@@ -381,46 +398,30 @@ const initializeApp = async () => {
         if (!showMainExperience()) {
             return;
         }
-        const targets = [getControlWindow(), getTranscriptWindow()]
-            .filter((win) => win && !win.isDestroyed());
-        targets.forEach((win) => {
-            win.webContents.send('control-window:toggle-capture');
-        });
+        sendToTranscriptWindow('control-window:toggle-capture');
     });
 
     /* Scroll up and down in conversion */
     const scrollUpShortcut = 'CommandOrControl+Shift+Up';
     shortcutManager.registerShortcut(scrollUpShortcut, () => {
-        const transcriptWindow = getTranscriptWindow();
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            transcriptWindow.webContents.send('control-window:scroll-up');
-        }
+        sendToTranscriptWindow('control-window:scroll-up');
     });
 
     const scrollDownShortcut = 'CommandOrControl+Shift+Down';
     shortcutManager.registerShortcut(scrollDownShortcut, () => {
-        const transcriptWindow = getTranscriptWindow();
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            transcriptWindow.webContents.send('control-window:scroll-down');
-        }
+        sendToTranscriptWindow('control-window:scroll-down');
     });
 
     /* Clear conversation history */
     const clearTranscriptShortcut = 'CommandOrControl+Shift+G';
     shortcutManager.registerShortcut(clearTranscriptShortcut, () => {
-        const transcriptWindow = getTranscriptWindow();
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            transcriptWindow.webContents.send('control-window:clear-transcript');
-        }
+        sendToTranscriptWindow('control-window:clear-transcript');
     });
 
     /* Turn mic on or off */
     const toggleMicShortcut = 'CommandOrControl+Shift+M';
     shortcutManager.registerShortcut(toggleMicShortcut, () => {
-        const controlWindow = getControlWindow();
-        if (controlWindow && !controlWindow.isDestroyed()) {
-            controlWindow.webContents.send('control-window:toggle-mic');
-        }
+        sendToTranscriptWindow('control-window:toggle-mic');
     });
 
     const assistantShortcut = 'CommandOrControl+Enter';
@@ -429,10 +430,7 @@ const initializeApp = async () => {
             ensureSettingsWindowVisible();
             return;
         }
-        const transcriptWindow = getTranscriptWindow();
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            transcriptWindow.webContents.send('control-window:assistant-send');
-        }
+        sendToTranscriptWindow('control-window:assistant-send');
     });
 
     const attachImageShortcut = 'CommandOrControl+Shift+H';
@@ -441,8 +439,8 @@ const initializeApp = async () => {
             ensureSettingsWindowVisible();
             return;
         }
-        const transcriptWindow = getTranscriptWindow();
-        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+        const transcriptWindow = getActiveTranscriptWindow();
+        if (!transcriptWindow) {
             return;
         }
         try {
@@ -459,7 +457,7 @@ const initializeApp = async () => {
                 data
             });
         } catch (error) {
-            transcriptWindow.webContents.send('control-window:assistant-attach', {
+            transcriptWindow?.webContents.send('control-window:assistant-attach', {
                 error: error?.message || 'Failed to capture screen.'
             });
         }
@@ -477,10 +475,7 @@ const initializeApp = async () => {
     /* Reveal or hide the transcript shortcut guide */
     const toggleGuideShortcut = 'CommandOrControl+H';
     shortcutManager.registerShortcut(toggleGuideShortcut, () => {
-        const transcriptWindow = getTranscriptWindow();
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            transcriptWindow.webContents.send('control-window:toggle-guide');
-        }
+        sendToTranscriptWindow('control-window:toggle-guide');
     });
 
     /* Control apps position */
@@ -510,30 +505,23 @@ const initializeApp = async () => {
             return;
         }
 
-        let controlWindow = getControlWindow();
-        let transcriptWindow = getTranscriptWindow();
-        const targets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
-
-        if (!targets.length) {
-            controlWindow = getControlWindow();
-            transcriptWindow = getTranscriptWindow();
+        let transcriptWindow = getActiveTranscriptWindow();
+        if (!transcriptWindow) {
+            ensureOverlayWindowsVisible();
+            transcriptWindow = getActiveTranscriptWindow();
+            if (!transcriptWindow) {
+                return;
+            }
         }
 
-        const liveTargets = [controlWindow, transcriptWindow].filter((win) => win && !win.isDestroyed());
-        if (!liveTargets.length) {
-            return;
-        }
+        const isVisible = typeof transcriptWindow.isVisible === 'function' ? transcriptWindow.isVisible() : true;
 
-        const anyVisible = liveTargets.some((win) => typeof win.isVisible === 'function' && win.isVisible());
-
-        if (anyVisible) {
-            liveTargets.forEach((win) => {
-                try {
-                    win.hide();
-                } catch (err) {
-                    console.warn('[Shortcut] Failed to hide window', err);
-                }
-            });
+        if (isVisible) {
+            try {
+                transcriptWindow.hide();
+            } catch (err) {
+                console.warn('[Shortcut] Failed to hide transcript window', err);
+            }
 
             const allowedShortcuts = new Set(
                 [visibilityToggleShortcut, attachImageShortcut, toggleMicShortcut, quitAppShortcut, toggleGuideShortcut, openSettingsShortcut]
@@ -543,20 +531,19 @@ const initializeApp = async () => {
             return;
         }
 
-        liveTargets.forEach((win) => {
-            try {
-                if (stealthModeEnabled && typeof win.showInactive === 'function') {
-                    win.showInactive();
-                } else {
-                    win.show();
-                    if (win === controlWindow && !stealthModeEnabled) {
-                        win.focus();
-                    }
+        try {
+            if (stealthModeEnabled && typeof transcriptWindow.showInactive === 'function') {
+                transcriptWindow.showInactive();
+            } else {
+                transcriptWindow.show();
+                if (!stealthModeEnabled) {
+                    transcriptWindow.focus();
                 }
-            } catch (err) {
-                console.warn('[Shortcut] Failed to show window', err);
             }
-        });
+        } catch (err) {
+            console.warn('[Shortcut] Failed to show transcript window', err);
+            return;
+        }
 
         shortcutManager.registerAllShortcuts();
         positionOverlayWindows();

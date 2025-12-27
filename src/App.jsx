@@ -1,5 +1,4 @@
 import { useEffect, useMemo } from 'react';
-import ControlWindow from './components/ControlWindow';
 import TranscriptWindow from './components/TranscriptWindow';
 import SettingsWindow from './components/SettingsWindow';
 import PermissionWindow from './components/PermissionWindow';
@@ -9,7 +8,6 @@ import './App.css';
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const DEFAULT_MIME = 'audio/webm;codecs=opus';
 const WINDOW_VARIANTS = {
-    CONTROL: 'control',
     TRANSCRIPT: 'transcript',
     SETTINGS: 'settings',
     PERMISSIONS: 'permissions'
@@ -44,7 +42,6 @@ const preferredMimeType = resolvePreferredMimeType();
 
 function App() {
     const windowVariant = useMemo(() => resolveWindowVariant(), []);
-    const isControlWindow = windowVariant === WINDOW_VARIANTS.CONTROL;
     const isSettingsWindow = windowVariant === WINDOW_VARIANTS.SETTINGS;
     const isPermissionWindow = windowVariant === WINDOW_VARIANTS.PERMISSIONS;
 
@@ -69,7 +66,7 @@ function App() {
         return 'unknown';
     }, []);
 
-    const session = useTranscriptionSession({ isControlWindow });
+    const session = useTranscriptionSession();
 
     useEffect(() => {
         if (typeof document === 'undefined') {
@@ -121,10 +118,13 @@ function App() {
         return <PermissionWindow />;
     }
 
-    return isControlWindow ? (
-        <ControlWindow session={session} chunkTimeslice={chunkTimeslice} preferredMimeType={preferredMimeType} platform={platform} />
-    ) : (
-        <TranscriptWindow session={session}/>
+    return (
+        <TranscriptWindow
+            session={session}
+            chunkTimeslice={chunkTimeslice}
+            preferredMimeType={preferredMimeType}
+            platform={platform}
+        />
     );
 }
 

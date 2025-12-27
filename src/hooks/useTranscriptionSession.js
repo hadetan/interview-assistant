@@ -35,8 +35,7 @@ const createConversationId = () => {
     return `conversation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-export function useTranscriptionSession({ isControlWindow }) {
-    const [status, setStatus] = useState('Idle');
+export function useTranscriptionSession() {
     const [messages, setMessages] = useState([]);
     const [latencyStatus, setLatencyStatus] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
@@ -226,7 +225,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         const sessionIds = Array.from(sessionTrackersRef.current.keys());
         sessionIdRef.current = null;
         sourceSessionMapRef.current.clear();
-        if (isControlWindow && sessionIds.length > 0 && electronAPI?.transcription?.stopSession) {
+        if (sessionIds.length > 0 && electronAPI?.transcription?.stopSession) {
             const stops = sessionIds.map((id) => electronAPI.transcription.stopSession(id).catch(() => {}));
             await Promise.allSettled(stops);
         }
@@ -236,7 +235,7 @@ export function useTranscriptionSession({ isControlWindow }) {
         resetLatencyWatchdog();
         discardAssistantDraft({ discardAll: true });
         clearConversationHistory();
-    }, [clearConversationHistory, discardAssistantDraft, isControlWindow, resetLatencyWatchdog, resetTranscriptionListener]);
+    }, [clearConversationHistory, discardAssistantDraft, resetLatencyWatchdog, resetTranscriptionListener]);
 
     const getSessionId = useCallback((sourceType = SOURCE_TYPES.SYSTEM) => {
         if (sourceType) {
@@ -465,6 +464,27 @@ export function useTranscriptionSession({ isControlWindow }) {
                 return next;
             }
 
+            if (!forceNewMessage && isFinal && !tracker.pendingMessageId && !tracker.continuationMessageId) {
+                for (let idx = next.length - 1; idx >= 0; idx -= 1) {
+                    const candidate = next[idx];
+                    if (!candidate || candidate.side !== 'left') {
+                        continue;
+                    }
+                    if (candidate.sourceType && tracker.sourceType && candidate.sourceType !== tracker.sourceType) {
+                        continue;
+                    }
+                    const normalizedExisting = typeof candidate.text === 'string' ? candidate.text.trim() : '';
+                    const normalizedIncoming = initialText.trim();
+                    if (normalizedExisting && normalizedIncoming &&
+                        (normalizedExisting === normalizedIncoming || normalizedExisting.endsWith(normalizedIncoming))) {
+                        tracker.lastMessageUpdateTs = now;
+                        tracker.lastServerText = '';
+                        return next;
+                    }
+                    break;
+                }
+            }
+
             tracker.pendingMessageId = isFinal ? null : id;
             tracker.continuationMessageId = isFinal ? null : id;
             tracker.lastMessageUpdateTs = now;
@@ -485,11 +505,6 @@ export function useTranscriptionSession({ isControlWindow }) {
             if (!eventSessionId) {
                 return;
             }
-            if (isControlWindow && !sessionTrackersRef.current.has(eventSessionId)) {
-                // Accept the event but backfill the tracker to avoid silently dropping updates
-                ensureSessionTracker(eventSessionId, payload.sourceType);
-            }
-
             const tracker = ensureSessionTracker(eventSessionId, payload.sourceType);
             if (!tracker) {
                 return;
@@ -501,7 +516,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                     if (payload.sourceType && !sourceSessionMapRef.current.has(payload.sourceType)) {
                         sourceSessionMapRef.current.set(payload.sourceType, eventSessionId);
                     }
-                    if (!isControlWindow && tracker.sourceType === SOURCE_TYPES.SYSTEM) {
+                    if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
                         sessionIdRef.current = eventSessionId;
                     }
                     if (tracker.sourceType === SOURCE_TYPES.SYSTEM) {
@@ -509,7 +524,6 @@ export function useTranscriptionSession({ isControlWindow }) {
                         lastLatencyTsRef.current = Date.now();
                         latencyLabelRef.current = '';
                         latencySuffixRef.current = '';
-                        setStatus('Streaming transcription active.');
                     }
                     updateStreamingState();
                     break;
@@ -529,7 +543,6 @@ export function useTranscriptionSession({ isControlWindow }) {
                         resetLatencyWatchdog();
                         latencySuffixRef.current = '';
                         latencySuffixReasonRef.current = '';
-                        setStatus(`Transcription warning: ${payload.warning?.message || payload.warning?.code || payload.message || 'Unknown warning'}`);
                     }
                     break;
                 case 'error':
@@ -537,7 +550,6 @@ export function useTranscriptionSession({ isControlWindow }) {
                         resetLatencyWatchdog();
                         latencySuffixRef.current = '';
                         latencySuffixReasonRef.current = '';
-                        setStatus(`Transcription error: ${payload.error?.message || 'Unknown error'}`);
                     }
                     break;
                 case 'stopped': {
@@ -553,10 +565,7 @@ export function useTranscriptionSession({ isControlWindow }) {
                         resetLatencyWatchdog();
                         latencySuffixRef.current = '';
                         latencySuffixReasonRef.current = '';
-                        setStatus('Transcription session stopped.');
-                        if (!isControlWindow) {
-                            sessionIdRef.current = null;
-                        }
+                        sessionIdRef.current = null;
                     }
                     updateStreamingState();
                     break;
@@ -595,7 +604,6 @@ export function useTranscriptionSession({ isControlWindow }) {
         ensureLatencyWatchdog,
         ensureSessionTracker,
         formatStalledLabel,
-        isControlWindow,
         resetLatencyWatchdog,
         resetTranscriptionListener,
         updateLatencyStatus,
@@ -914,8 +922,6 @@ export function useTranscriptionSession({ isControlWindow }) {
     }, [appendAssistantNotice, ensureConversationId]);
 
     return useMemo(() => ({
-        status,
-        setStatus,
         messages,
         latencyStatus,
         isStreaming,
@@ -946,7 +952,6 @@ export function useTranscriptionSession({ isControlWindow }) {
         requestAssistantResponse,
         messages,
         startTranscriptionSession,
-        status,
         stopTranscriptionSession,
         teardownSession
     ]);

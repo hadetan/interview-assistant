@@ -79,20 +79,13 @@ test('moveOverlaysBy repositions overlays and clamps to the work area', () => {
         app: fakeApp
     });
 
-    windowManager.createControlWindow();
-    windowManager.createTranscriptWindow();
+    const transcript = windowManager.createTranscriptWindow();
 
-    const control = windowManager.getControlWindow();
-    const transcript = windowManager.getTranscriptWindow();
-
-    control.setPosition(0, 0);
     transcript.setPosition(100, 100);
 
     windowManager.moveOverlaysBy(600, 600);
-
-    const controlBounds = control.getBounds();
     const transcriptBounds = transcript.getBounds();
 
     assert.ok(transcriptBounds.x >= 0 && transcriptBounds.x + transcriptBounds.width <= 1200);
-    assert.ok(controlBounds.y >= 0);
+    assert.ok(transcriptBounds.y >= 0 && transcriptBounds.y + transcriptBounds.height <= 1200);
 });

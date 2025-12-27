@@ -4,8 +4,6 @@ const fs = require('node:fs');
 const DEFAULT_TRANSCRIPT_WIDTH = 1080;
 const FALLBACK_TRANSCRIPT_HEIGHT = 520;
 const MIN_TRANSCRIPT_HEIGHT = 320;
-const CONTROL_WINDOW_WIDTH = 420;
-const CONTROL_WINDOW_HEIGHT = 64;
 
 const clampOverlaysWithinArea = (targets, workArea) => {
     const rects = targets.filter(Boolean);
@@ -95,14 +93,11 @@ const createWindowManager = ({
 
     const blankNativeImage = loadBlankNativeImage({ nativeImage, pathModule, fsModule, projectRoot });
 
-    let controlWindow = null;
     let transcriptWindow = null;
     let lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
     let settingsWindow = null;
     let overlayVisibilitySnapshot = null;
     let permissionWindow = null;
-
-    const getControlBounds = () => (controlWindow && !controlWindow.isDestroyed() ? controlWindow.getBounds() : null);
     const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
 
     const getTranscriptContentWidth = () => {
@@ -115,18 +110,17 @@ const createWindowManager = ({
                 return contentWidth;
             }
         } catch (_err) {
-            // ignore content size access failures while the window initializes
+            // ignore inability to access content size while window initializes
         }
         const bounds = getTranscriptBounds();
         return bounds?.width || DEFAULT_TRANSCRIPT_WIDTH;
     };
 
     const resolveTranscriptHeightBounds = () => {
-        const controlBounds = getControlBounds();
-        const anchorBounds = getTranscriptBounds() || controlBounds;
+        const anchorBounds = getTranscriptBounds();
         const workArea = resolveWorkArea(screen, anchorBounds);
         const bottomMargin = windowTopMargin;
-        const reservedTop = windowTopMargin + (controlBounds ? controlBounds.height + windowVerticalGap : 0);
+        const reservedTop = windowTopMargin;
         const rawAvailable = (workArea?.height ?? 0) - reservedTop - bottomMargin;
 
         if (rawAvailable <= 0) {
@@ -200,7 +194,7 @@ const createWindowManager = ({
     };
 
     const positionOverlayWindows = () => {
-        if (!controlWindow && !transcriptWindow) {
+        if (!transcriptWindow || transcriptWindow.isDestroyed()) {
             return;
         }
 
@@ -216,67 +210,30 @@ const createWindowManager = ({
         const originX = workArea?.x ?? 0;
         const originY = workArea?.y ?? 0;
 
-        if (controlWindow && !controlWindow.isDestroyed()) {
-            const controlBounds = controlWindow.getBounds();
-            const controlX = originX + Math.round((areaWidth - controlBounds.width) / 2);
-            const controlY = originY + windowTopMargin;
-            controlWindow.setPosition(controlX, controlY);
-
-            if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-                const transcriptBounds = transcriptWindow.getBounds();
-                const transcriptX = originX + Math.round((areaWidth - transcriptBounds.width) / 2);
-                const transcriptY = controlY + controlBounds.height + windowVerticalGap;
-                transcriptWindow.setPosition(transcriptX, transcriptY);
-            }
-            return;
-        }
-
-        if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-            const transcriptBounds = transcriptWindow.getBounds();
-            const transcriptX = originX + Math.round((areaWidth - transcriptBounds.width) / 2);
-            const transcriptY = originY + windowTopMargin;
-            transcriptWindow.setPosition(transcriptX, transcriptY);
-        }
+        const transcriptBounds = transcriptWindow.getBounds();
+        const transcriptX = originX + Math.round((areaWidth - transcriptBounds.width) / 2);
+        const transcriptY = originY + windowTopMargin;
+        transcriptWindow.setPosition(transcriptX, transcriptY);
     };
 
     const moveOverlaysBy = (dx, dy) => {
-        const controlAlive = controlWindow && !controlWindow.isDestroyed();
         const transcriptAlive = transcriptWindow && !transcriptWindow.isDestroyed();
 
-        if (!controlAlive && !transcriptAlive) {
+        if (!transcriptAlive) {
             return;
         }
 
-        const controlBounds = controlAlive ? controlWindow.getBounds() : null;
-        const transcriptBounds = transcriptAlive ? transcriptWindow.getBounds() : null;
-
-        const nextTranscript = transcriptBounds ? {
+        const transcriptBounds = transcriptWindow.getBounds();
+        const nextTranscript = {
             ...transcriptBounds,
             x: transcriptBounds.x + dx,
             y: transcriptBounds.y + dy
-        } : null;
+        };
 
-        let nextControl = null;
+        const workArea = resolveWorkArea(screen, nextTranscript);
+        const [clampedTranscript] = clampOverlaysWithinArea([nextTranscript], workArea);
 
-        if (controlBounds) {
-            if (nextTranscript) {
-                const centeredX = nextTranscript.x + Math.round((nextTranscript.width - controlBounds.width) / 2);
-                const centeredY = nextTranscript.y - (controlBounds.height + windowVerticalGap);
-                nextControl = { ...controlBounds, x: centeredX, y: centeredY };
-            } else {
-                nextControl = { ...controlBounds, x: controlBounds.x + dx, y: controlBounds.y + dy };
-            }
-        }
-
-        const anchor = nextTranscript || nextControl || transcriptBounds || controlBounds;
-        const workArea = resolveWorkArea(screen, anchor);
-        const [clampedControl, clampedTranscript] = clampOverlaysWithinArea([nextControl, nextTranscript], workArea);
-
-        if (controlAlive && clampedControl) {
-            controlWindow.setPosition(clampedControl.x, clampedControl.y);
-        }
-
-        if (transcriptAlive && clampedTranscript) {
+        if (clampedTranscript) {
             transcriptWindow.setPosition(clampedTranscript.x, clampedTranscript.y);
         }
     };
@@ -293,85 +250,12 @@ const createWindowManager = ({
         }
     };
 
-    const createControlWindow = () => {
-        if (controlWindow && !controlWindow.isDestroyed()) {
-            return controlWindow;
-        }
-
-        controlWindow = new BrowserWindow({
-            width: CONTROL_WINDOW_WIDTH,
-            height: CONTROL_WINDOW_HEIGHT,
-            transparent: true,
-            frame: false,
-            icon: blankNativeImage,
-            skipTaskbar: stealthModeEnabled,
-            autoHideMenuBar: true,
-            resizable: false,
-            movable: false,
-            minimizable: false,
-            maximizable: false,
-            focusable: !stealthModeEnabled,
-            show: false,
-            hasShadow: false,
-            backgroundColor: '#00000000',
-            hiddenInMissionControl: stealthModeEnabled,
-            acceptFirstMouse: true,
-            webPreferences: overlayWebPreferences,
-            useContentSize: true,
-        });
-
-        if (stealthModeEnabled) {
-            controlWindow.setAlwaysOnTop(true, 'screen-saver');
-            controlWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-            controlWindow.setIgnoreMouseEvents(true, { forward: true });
-        } else {
-            controlWindow.setAlwaysOnTop(true, 'normal');
-            controlWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-            controlWindow.setIgnoreMouseEvents(false);
-        }
-        controlWindow.setFullScreenable(false);
-
-        controlWindow.once('ready-to-show', () => {
-            if (stealthModeEnabled) {
-                controlWindow?.showInactive();
-                controlWindow?.setIgnoreMouseEvents(true, { forward: true });
-            } else {
-                controlWindow?.show();
-                controlWindow?.focus();
-                controlWindow?.setIgnoreMouseEvents(false);
-                // Open DevTools in OFF=true mode
-                if (process.env.ELECTRON_START_URL) {
-                    controlWindow?.webContents.openDevTools({ mode: 'detach' });
-                }
-            }
-            positionOverlayWindows();
-        });
-
-        controlWindow.on('resized', positionOverlayWindows);
-
-        controlWindow.on('closed', () => {
-            controlWindow = null;
-            if (transcriptWindow && !transcriptWindow.isDestroyed()) {
-                transcriptWindow.close();
-            }
-        });
-
-        controlWindow.on('focus', () => {
-            if (stealthModeEnabled) {
-                controlWindow.blur();
-            }
-        });
-
-        loadRendererForWindow(controlWindow, 'control');
-        return controlWindow;
-    };
-
     const createTranscriptWindow = () => {
         if (transcriptWindow && !transcriptWindow.isDestroyed()) {
             return transcriptWindow;
         }
 
-        const anchorBounds = getControlBounds();
+        const anchorBounds = getTranscriptBounds();
         const workArea = resolveWorkArea(screen, anchorBounds);
         const dynamicWidth = Math.max(1, Math.round((workArea.width || DEFAULT_TRANSCRIPT_WIDTH) * 0.5));
         const dynamicHeight = Math.max(1, Math.round((workArea.height || FALLBACK_TRANSCRIPT_HEIGHT) * 0.9));
@@ -436,10 +320,8 @@ const createWindowManager = ({
         transcriptWindow.on('closed', () => {
             transcriptWindow = null;
             lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
-            if (!controlWindow || controlWindow.isDestroyed()) {
-                if (app?.quit) {
-                    app.quit();
-                }
+            if (app?.quit) {
+                app.quit();
             }
         });
 
@@ -447,24 +329,13 @@ const createWindowManager = ({
         return transcriptWindow;
     };
 
-    const getControlWindow = () => controlWindow && !controlWindow.isDestroyed() ? controlWindow : null;
     const getTranscriptWindow = () => transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow : null;
 
     const hideOverlayWindows = () => {
-        const control = getControlWindow();
         const transcript = getTranscriptWindow();
         overlayVisibilitySnapshot = {
-            controlVisible: Boolean(control?.isVisible?.()),
             transcriptVisible: Boolean(transcript?.isVisible?.())
         };
-
-        if (control) {
-            try {
-                control.hide();
-            } catch (error) {
-                console.warn('[WindowManager] Failed to hide control window', error);
-            }
-        }
 
         if (transcript) {
             try {
@@ -481,23 +352,7 @@ const createWindowManager = ({
             return;
         }
 
-        const control = getControlWindow();
         const transcript = getTranscriptWindow();
-
-        if (control && overlayVisibilitySnapshot.controlVisible) {
-            try {
-                if (stealthModeEnabled && typeof control.showInactive === 'function') {
-                    control.showInactive();
-                } else {
-                    control.show();
-                    if (!stealthModeEnabled) {
-                        control.focus();
-                    }
-                }
-            } catch (error) {
-                console.warn('[WindowManager] Failed to restore control window', error);
-            }
-        }
 
         if (transcript && overlayVisibilitySnapshot.transcriptVisible) {
             try {
@@ -650,7 +505,6 @@ const createWindowManager = ({
     };
 
     return {
-        createControlWindow,
         createTranscriptWindow,
         createSettingsWindow,
         destroySettingsWindow,
@@ -658,7 +512,6 @@ const createWindowManager = ({
         destroyPermissionWindow,
         positionOverlayWindows,
         moveOverlaysBy,
-        getControlWindow,
         getTranscriptWindow,
         getSettingsWindow,
         getPermissionWindow,
