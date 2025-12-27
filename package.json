@@ -27,6 +27,7 @@
       "server/ai/transcription/**",
       "server/utils/**",
       "tools/**",
+      "utils/**",
       "package.json"
     ],
     "asarUnpack": [

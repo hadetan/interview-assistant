@@ -1,0 +1,1 @@
+export const DEFAULT_TRANSCRIPT_OPACITY = 0.50;

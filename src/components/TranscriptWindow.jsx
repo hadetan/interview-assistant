@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import ChatBubble from './ChatBubble';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { getAltModifierKey, getPrimaryModifierKey } from '../utils/osDetection';
+import { clampOpacity, computeTranscriptOpacityVars } from '../utils/transcriptOpacity';
 import './css/TranscriptWindow.css';
+import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const SCROLL_STEP_PX = 280;
@@ -19,9 +21,10 @@ export default function TranscriptWindow({ session }) {
     } = session;
     const { transcriptRef, scrollBy, resetScroll } = useTranscriptScroll({ messages });
     const [isGuideVisible, setGuideVisible] = useState(false);
+    const [transcriptOpacity, setTranscriptOpacity] = useState(DEFAULT_TRANSCRIPT_OPACITY);
     const primaryModifierKey = getPrimaryModifierKey();
     const altModifierKey = getAltModifierKey();
-    const quitShortcut = `${(altModifierKey || 'Alt').toLowerCase()}+shift+q`;
+    const opacityStyles = useMemo(() => computeTranscriptOpacityVars(transcriptOpacity), [transcriptOpacity]);
 
     const shortcutSections = useMemo(() => ([
         {
@@ -44,12 +47,14 @@ export default function TranscriptWindow({ session }) {
             heading: 'Window',
             hint: 'Navigate quickly',
             shortcuts: [
-                { label: 'Move control window', combo: [primaryModifierKey, '↑↓'] },
-                { label: 'Scroll transcript', combo: [primaryModifierKey, 'Shift', '↑↓←→'] },
-                { label: 'Open Settings', combo: [primaryModifierKey, ','] }
+                { label: 'Move control window', combo: [primaryModifierKey, 'Arrow ↑↓'] },
+                { label: 'Scroll transcript', combo: [primaryModifierKey, 'Shift', 'Arrow ←↑↓→'] },
+                { label: 'Hide/unhide app', combo: [primaryModifierKey, 'Shift', 'B'] }
             ]
         }
     ]), [primaryModifierKey]);
+    const quitShortcutCombo = useMemo(() => ([altModifierKey || 'Alt', 'Shift', 'Q']), [altModifierKey]);
+    const clearTranscriptCombo = useMemo(() => ([primaryModifierKey, 'Shift', 'G']), [primaryModifierKey]);
 
     const handleClear = useCallback(() => {
         clearTranscript();
@@ -58,6 +63,49 @@ export default function TranscriptWindow({ session }) {
 
     const toggleGuide = useCallback(() => {
         setGuideVisible((prev) => !prev);
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!electronAPI?.settings?.getGeneral) {
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        const loadGeneralSettings = async () => {
+            try {
+                const response = await electronAPI.settings.getGeneral();
+                const nextOpacity = response?.general?.transcriptOpacity;
+                if (!cancelled && nextOpacity !== undefined) {
+                    setTranscriptOpacity(clampOpacity(nextOpacity));
+                }
+            } catch (error) {
+                console.warn('[TranscriptWindow] Failed to load general settings', error);
+            }
+        };
+
+        loadGeneralSettings();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (typeof electronAPI?.settings?.onGeneralUpdated !== 'function') {
+            return () => { };
+        }
+        const unsubscribe = electronAPI.settings.onGeneralUpdated((payload) => {
+            const nextOpacity = payload?.general?.transcriptOpacity;
+            if (nextOpacity !== undefined) {
+                setTranscriptOpacity(clampOpacity(nextOpacity));
+            }
+        });
+        return () => {
+            if (typeof unsubscribe === 'function') {
+                unsubscribe();
+            }
+        };
     }, []);
 
     useEffect(() => {
@@ -136,14 +184,18 @@ export default function TranscriptWindow({ session }) {
     const guideClassName = `transcript-guide${isGuideVisible ? '' : ' transcript-guide-collapsed'}`;
 
     return (
-        <div className="transcript-shell">
+        <div className="transcript-shell" style={opacityStyles}>
             <section className="transcript-panel" aria-live="polite">
                 <header className="transcript-heading">
                     <span className={`state-dot ${isStreaming ? 'state-dot-live' : ''}`} aria-hidden="true" />
                     <span className="heading-chip">{isStreaming ? 'Streaming' : 'Idle'}</span>
-                    <span className="heading-shortcut-hint guide-shortcut-keys">
-                        <kbd>{quitShortcut}</kbd>
-                        to quit
+                    <span className="heading-shortcut-hint">
+                        <span className="guide-shortcut-keys">
+                            {quitShortcutCombo.map((key) => (
+                                <kbd key={key}>{key}</kbd>
+                            ))}
+                        </span>
+                        <span className="heading-shortcut-label">to quit</span>
                     </span>
                 </header>
                 <div className="transcript-body" ref={transcriptRef}>
@@ -151,17 +203,27 @@ export default function TranscriptWindow({ session }) {
                         {messages.length === 0 ? (
                             <div className="chat-placeholder">Transcription will appear here once capture starts.</div>
                         ) : (
-                            messages.map((msg) => (
-                                <ChatBubble
-                                    key={msg.id}
-                                    side={msg.side || 'left'}
-                                    text={msg.text}
-                                    isFinal={msg.isFinal}
-                                    sourceType={msg.sourceType}
-                                    attachments={msg.attachments}
-                                    sent={msg.sent}
-                                />
-                            ))
+                            <>
+                                {messages.map((msg) => (
+                                    <ChatBubble
+                                        key={msg.id}
+                                        side={msg.side || 'left'}
+                                        text={msg.text}
+                                        isFinal={msg.isFinal}
+                                        sourceType={msg.sourceType}
+                                        attachments={msg.attachments}
+                                        sent={msg.sent}
+                                    />
+                                ))}
+                                <div className="chat-shortcut-hint" role="status" aria-live="polite">
+                                    <span className="guide-shortcut-keys">
+                                        {clearTranscriptCombo.map((key) => (
+                                            <kbd key={key}>{key}</kbd>
+                                        ))}
+                                    </span>
+                                    <span className="chat-shortcut-label">clear conversation</span>
+                                </div>
+                            </>
                         )}
                     </div>
                 </div>
@@ -198,12 +260,22 @@ export default function TranscriptWindow({ session }) {
                         </>
                     ) : (
                         <div className="guide-hint" role="status" aria-live="polite">
-                            <span className="guide-hint-label">Press</span>
-                            <span className="guide-shortcut-keys guide-hint-keys">
-                                <kbd>{primaryModifierKey}</kbd>
-                                <kbd>H</kbd>
-                            </span>
-                            <span className="guide-hint-label">to show shortcuts</span>
+                            {!isStreaming && (
+                                <div className="hints">
+                                    <span className="guide-shortcut-keys guide-hint-keys">
+                                        <kbd>{primaryModifierKey}</kbd>
+                                        <kbd>comma</kbd>
+                                    </span>
+                                    <span className="guide-hint-label">to open settings</span>
+                                </div>
+                            )}
+                            <div className="hints">
+                                <span className="guide-shortcut-keys guide-hint-keys">
+                                    <kbd>{primaryModifierKey}</kbd>
+                                    <kbd>H</kbd>
+                                </span>
+                                <span className="guide-hint-label">to show shortcuts</span>
+                            </div>
                         </div>
                     )}
                 </footer>

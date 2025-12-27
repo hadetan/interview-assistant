@@ -2,8 +2,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { DEFAULT_TRANSCRIPT_OPACITY } = require('../../utils/const');
 
 const SETTINGS_FILENAME = 'settings.json';
+const DEFAULT_GENERAL_SETTINGS = {
+    transcriptOpacity: DEFAULT_TRANSCRIPT_OPACITY,
+};
 
 const ensureDirectory = ({ fsModule, targetPath }) => {
     const dir = path.dirname(targetPath);
@@ -64,8 +68,16 @@ const createSettingsStore = ({
         writeFileSafe({ fsModule, targetPath: resolveFilePath(), data: nextData });
     };
 
-    const getAssistantSettings = () => {
+    const loadStore = () => {
         const store = loadAll();
+        if (typeof store === 'object' && store !== null) {
+            return store;
+        }
+        return {};
+    };
+
+    const getAssistantSettings = () => {
+        const store = loadStore();
         const assistant = typeof store.assistant === 'object' && store.assistant !== null
             ? store.assistant
             : {};
@@ -81,8 +93,19 @@ const createSettingsStore = ({
         };
     };
 
+    const getGeneralSettings = () => {
+        const store = loadStore();
+        const general = typeof store.general === 'object' && store.general !== null
+            ? store.general
+            : {};
+        return {
+            ...DEFAULT_GENERAL_SETTINGS,
+            ...general
+        };
+    };
+
     const setAssistantSettings = (settings = {}) => {
-        const store = loadAll();
+        const store = loadStore();
         store.assistant = {
             provider: typeof settings.provider === 'string' ? settings.provider.trim().toLowerCase() : '',
             model: typeof settings.model === 'string' ? settings.model.trim() : '',
@@ -94,16 +117,39 @@ const createSettingsStore = ({
         return store.assistant;
     };
 
+    const sanitizeGeneralSettings = (settings = {}) => {
+        const current = getGeneralSettings();
+        const merged = { ...current };
+        if (settings.transcriptOpacity !== undefined) {
+            const numeric = Number(settings.transcriptOpacity);
+            if (Number.isFinite(numeric)) {
+                const clamped = Math.min(1, Math.max(0.25, numeric));
+                merged.transcriptOpacity = clamped;
+            }
+        }
+        return merged;
+    };
+
+    const setGeneralSettings = (settings = {}) => {
+        const store = loadStore();
+        store.general = sanitizeGeneralSettings(settings);
+        saveAll(store);
+        return store.general;
+    };
+
     return {
         resolveFilePath,
         loadAll,
         saveAll,
         getAssistantSettings,
-        setAssistantSettings
+        setAssistantSettings,
+        getGeneralSettings,
+        setGeneralSettings
     };
 };
 
 module.exports = {
     createSettingsStore,
-    SETTINGS_FILENAME
+    SETTINGS_FILENAME,
+    DEFAULT_GENERAL_SETTINGS
 };

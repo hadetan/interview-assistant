@@ -15,6 +15,10 @@ body {
     overflow: hidden;
 }
 
+body[data-window-mode="settings"] {
+    overflow: auto;
+}
+
 #root {
     display: contents;
 }

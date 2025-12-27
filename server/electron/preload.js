@@ -155,10 +155,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     settings: {
         get: () => ipcRenderer.invoke('settings:get'),
+        getGeneral: () => ipcRenderer.invoke('settings:get-general'),
         set: (payload) => ipcRenderer.invoke('settings:set', payload),
         testConnection: (payload) => ipcRenderer.invoke('settings:test-connection', payload),
         listModels: (payload) => ipcRenderer.invoke('settings:list-models', payload),
-        close: () => ipcRenderer.invoke('settings:close')
+        close: () => ipcRenderer.invoke('settings:close'),
+        onGeneralUpdated: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = (_event, payload) => callback(payload);
+            ipcRenderer.on('settings:general-updated', listener);
+            return () => ipcRenderer.removeListener('settings:general-updated', listener);
+        }
     },
     overlay: {
         moveDirection: (direction) => {
