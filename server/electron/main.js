@@ -355,6 +355,16 @@ const initializeApp = async () => {
                     shortcutManager.registerAllShortcuts();
                 }
             }
+        },
+        onGeneralSettingsApplied: async (generalSettings) => {
+            const transcriptWindow = windowManager.getTranscriptWindow();
+            if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+                try {
+                    transcriptWindow.webContents.send('settings:general-updated', { general: generalSettings });
+                } catch (error) {
+                    console.warn('[Settings] Failed to notify transcript window about general settings update', error);
+                }
+            }
         }
     });
 

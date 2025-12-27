@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import TranscriptPreview from './TranscriptPreview';
+import { clampOpacity, TRANSCRIPT_OPACITY_OPTIONS } from '../utils/transcriptOpacity';
 import './css/SettingsWindow.css';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 
 const emptyMissing = { provider: true, model: true, apiKey: true };
+const DEFAULT_TRANSCRIPT_OPACITY = 0.75;
 
 const toTitleCase = (value) => value.replace(/(^.|-.|_.|\s.)/g, (segment) => segment.replace(/[-_\s]/g, '').toUpperCase());
 
@@ -23,6 +26,7 @@ function SettingsWindow() {
     const [initialized, setInitialized] = useState(false);
     const [hasSavedConfig, setHasSavedConfig] = useState(false);
     const [activeTab, setActiveTab] = useState('assistant');
+    const [transcriptOpacity, setTranscriptOpacity] = useState(DEFAULT_TRANSCRIPT_OPACITY);
 
     const modelsRequestIdRef = useRef(0);
     const fetchModelsTimeoutRef = useRef(null);
@@ -31,7 +35,7 @@ function SettingsWindow() {
 
     useEffect(() => {
         if (typeof window === 'undefined' || !hasSavedConfig) {
-            return () => {};
+            return () => { };
         }
 
         const handleKeyDown = (event) => {
@@ -63,6 +67,13 @@ function SettingsWindow() {
                 const config = result.config || {};
                 const nextProvider = typeof config.provider === 'string' ? config.provider : '';
                 const nextModel = typeof config.model === 'string' ? config.model : '';
+                const generalSettings = typeof result.general === 'object' && result.general !== null
+                    ? result.general
+                    : {};
+                const resolvedOpacity = generalSettings.transcriptOpacity !== undefined
+                    ? generalSettings.transcriptOpacity
+                    : DEFAULT_TRANSCRIPT_OPACITY;
+                setTranscriptOpacity(clampOpacity(resolvedOpacity));
                 setProvider(nextProvider);
                 setModel(nextModel);
                 setHasStoredSecret(Boolean(result.hasSecret));
@@ -238,38 +249,75 @@ function SettingsWindow() {
         }
     };
 
-    const handleSave = async () => {
+    const handleOpacityChange = (value) => {
+        setTranscriptOpacity(clampOpacity(value));
+    };
+
+    const persistSettings = async ({
+        requireVerifiedConnection = false,
+        savingMessage = 'Saving settings…',
+        successMessage = 'Settings saved. You can close this window.'
+    } = {}) => {
         if (!provider || !model) {
             setStatus({ type: 'error', message: 'Select both provider and model before saving.' });
-            return;
+            return false;
         }
+
+        if (requireVerifiedConnection && (!connectionVerified || missing.model)) {
+            setStatus({ type: 'error', message: 'Verify the connection before saving.' });
+            return false;
+        }
+
+        if (typeof electronAPI?.settings?.set !== 'function') {
+            setStatus({ type: 'error', message: 'Settings API is unavailable.' });
+            return false;
+        }
+
         setSaving(true);
-        setStatus({ type: 'info', message: 'Saving settings…' });
+        setStatus({ type: 'info', message: savingMessage });
+
         try {
             const trimmedKey = typeof apiKey === 'string' ? apiKey.trim() : '';
             const payload = {
                 provider,
                 model,
                 apiKey: trimmedKey || undefined,
-                providerConfig: {}
+                providerConfig: {},
+                general: {
+                    transcriptOpacity: clampOpacity(transcriptOpacity)
+                }
             };
-            const result = await electronAPI?.settings?.set?.(payload);
+            const result = await electronAPI.settings.set(payload);
             if (!result?.ok) {
                 throw new Error(result?.error || 'Failed to save settings.');
             }
-            setStatus({ type: 'success', message: 'Settings saved. You can close this window.' });
+            setStatus({ type: 'success', message: successMessage });
             setHasSavedConfig(true);
+            return true;
         } catch (error) {
             setStatus({ type: 'error', message: error?.message || 'Failed to save settings.' });
+            return false;
         } finally {
             setSaving(false);
         }
+    };
+
+    const handleSave = async () => {
+        await persistSettings({ requireVerifiedConnection: true });
+    };
+
+    const handleGeneralSave = async () => {
+        await persistSettings({
+            savingMessage: 'Saving preferences…',
+            successMessage: 'Transcript preferences saved.'
+        });
     };
 
     const normalizedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
     const showSaveButton = connectionVerified && !missing.model;
     const canCheckConnection = provider && (normalizedApiKey || hasStoredSecret);
     const canSave = showSaveButton && !saving;
+    const canSaveGeneral = Boolean(provider && model) && !saving;
     const isOnboarding = !hasSavedConfig;
 
     const tabs = useMemo(() => (
@@ -364,26 +412,62 @@ function SettingsWindow() {
         </div>
     );
 
-    const renderGeneralPanel = () => {
-        return (
-            <div className="settings-panel general">
-                <div className="settings-card">
-                    <h2>General Preferences</h2>
-                    <p>Configure overarching preferences here. Switch to the Assistant tab to adjust provider credentials and models.</p>
-                </div>
+    const renderGeneralPanel = () => (
+        <div className="settings-panel general">
+            <div className="settings-card">
+                <h2>Transcript Appearance</h2>
+                <p>Adjust how transparent the transcript window appears on top of your workspace.</p>
 
-                <div className="settings-actions">
-                    <button
-                        type="button"
-                        className="secondary"
-                        onClick={handleClose}
+                <div className="settings-field settings-opacity-field">
+                    <span className="settings-field-label" id="transcript-opacity-label">Opacity level</span>
+                    <div
+                        className="opacity-options"
+                        role="group"
+                        aria-labelledby="transcript-opacity-label"
                     >
-                        Close
-                    </button>
+                        {TRANSCRIPT_OPACITY_OPTIONS.map((option) => {
+                            const isSelected = Math.abs(transcriptOpacity - option.value) < 0.001;
+                            return (
+                                <button
+                                    key={option.value}
+                                    type="button"
+                                    className={`opacity-option${isSelected ? ' selected' : ''}`}
+                                    aria-pressed={isSelected}
+                                    onClick={() => handleOpacityChange(option.value)}
+                                >
+                                    {option.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <small className="settings-hint">1.00 removes transparency entirely.</small>
                 </div>
+                <TranscriptPreview opacity={transcriptOpacity} />
             </div>
-        );
-    };
+
+            {status.message && (
+                <div className={`settings-status ${status.type}`}>{status.message}</div>
+            )}
+
+            <div className="settings-actions">
+                <button
+                    type="button"
+                    className="primary"
+                    onClick={handleGeneralSave}
+                    disabled={!canSaveGeneral}
+                >
+                    {saving ? 'Saving…' : 'Save Preferences'}
+                </button>
+                <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleClose}
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+    );
 
     if (!initialized) return <div className="loading">Initializing…</div>;
 
@@ -394,7 +478,6 @@ function SettingsWindow() {
                     hasSavedConfig ? (
                         <>
                             <h1>Settings</h1>
-                            <p>Review general preferences or fine-tune the assistant configuration below.</p>
                         </>
                     ) : (
                         <>

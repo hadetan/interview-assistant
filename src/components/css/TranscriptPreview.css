@@ -1,0 +1,28 @@
+.transcript-preview {
+    pointer-events: none;
+}
+
+.transcript-preview-panel {
+    border-radius: 20px;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.45);
+}
+
+.transcript-preview-heading {
+    justify-content: space-between;
+}
+
+.transcript-preview-body {
+    max-height: 340px;
+    overflow-x: auto;
+}
+
+.transcript-preview-footer {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: rgba(203, 213, 225, 0.82);
+}
+
+.transcript-preview-hint {
+    margin: 0;
+}

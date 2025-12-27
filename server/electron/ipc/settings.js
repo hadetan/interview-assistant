@@ -47,7 +47,8 @@ const registerSettingsHandlers = ({
     secureStore,
     onSettingsApplied,
     windowManager,
-    resolveAssistantConfig
+    resolveAssistantConfig,
+    onGeneralSettingsApplied
 }) => {
     if (!ipcMain || !settingsStore || !secureStore) {
         throw new Error('IPC registration requires ipcMain, settingsStore, and secureStore instances.');
@@ -62,6 +63,8 @@ const registerSettingsHandlers = ({
         const providerConfig = stored.providerConfig || {};
         const hasSecret = provider ? await secureStore.hasAssistantApiKey(provider) : false;
 
+        const general = settingsStore.getGeneralSettings();
+
         return {
             ok: true,
             providers: availableProviders,
@@ -70,12 +73,21 @@ const registerSettingsHandlers = ({
                 model,
                 providerConfig
             },
+            general,
             missing: {
                 provider: !provider,
                 model: !model,
                 apiKey: !hasSecret
             },
             hasSecret
+        };
+    });
+
+    ipcMain.handle('settings:get-general', async () => {
+        const general = settingsStore.getGeneralSettings();
+        return {
+            ok: true,
+            general
         };
     });
 
@@ -161,6 +173,10 @@ const registerSettingsHandlers = ({
             return { ok: false, error: 'Model is required.' };
         }
 
+        const generalInput = typeof payload.general === 'object' && payload.general !== null
+            ? payload.general
+            : {};
+
         const apiKeyInput = typeof payload.apiKey === 'string' ? payload.apiKey.trim() : '';
         let apiKeyToPersist = apiKeyInput;
 
@@ -195,6 +211,8 @@ const registerSettingsHandlers = ({
                 }
             }
 
+            const generalSettings = settingsStore.setGeneralSettings(generalInput);
+
             const config = resolveAssistantConfig
                 ? await resolveAssistantConfig()
                 : loadAssistantConfig({ provider, model, apiKey: apiKeyToPersist ?? (await secureStore.getAssistantApiKey(provider) || ''), providerConfig });
@@ -203,13 +221,17 @@ const registerSettingsHandlers = ({
                 await onSettingsApplied({ config, provider });
             }
 
+            if (typeof onGeneralSettingsApplied === 'function') {
+                await onGeneralSettingsApplied(generalSettings);
+            }
+
             const settingsWindow = windowManager?.getSettingsWindow?.();
             if (settingsWindow) {
                 windowManager.restoreOverlayWindows?.();
                 windowManager.destroySettingsWindow?.();
             }
 
-            return { ok: true };
+            return { ok: true, general: generalSettings };
         } catch (error) {
             console.error('[Settings] Failed to persist settings', error);
             return {
