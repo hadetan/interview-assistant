@@ -1,5 +1,5 @@
 const { EventEmitter } = require('node:events');
-const WebSocket = require('ws');
+const { StreamingTranscriber } = require('assemblyai');
 
 const fetchFn = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
 if (!fetchFn) {
@@ -14,11 +14,9 @@ const log = (level, message, ...args) => {
 };
 
 const DEFAULT_SAMPLE_RATE = 16000;
-const DEFAULT_BASE_URL = 'wss://streaming.assemblyai.com/v3/ws';
 const REALTIME_TOKEN_URL = 'https://streaming.assemblyai.com/v3/token';
 const DEFAULT_SPEECH_MODEL = 'universal-streaming-english';
 const DEFAULT_ENCODING = 'pcm_s16le';
-const TERMINATE_MESSAGE = JSON.stringify({ type: 'Terminate' });
 
 class AssemblyLiveClient extends EventEmitter {
     constructor(options = {}) {
@@ -47,47 +45,198 @@ class AssemblyLiveClient extends EventEmitter {
         this.maxSessionDurationSeconds = typeof maxSessionDurationSeconds === 'number'
             ? Math.max(60, Math.min(3600, maxSessionDurationSeconds))
             : undefined;
-        this.enableRawMessages = enableRawMessages;
+        this.enableRawMessages = Boolean(enableRawMessages);
 
-        this.ws = null;
+        this.transcriber = null;
+        this.connectPromise = null;
+        this.currentTermination = null;
+        this.waitForTerminationOnClose = true;
+
         this.connected = false;
         this.ready = false;
-        this.lastSendTs = 0;
         this.audioChunkCount = 0;
+        this.lastSendTs = 0;
         this.sessionToken = null;
         this.sessionExpiresAt = null;
+        this.sessionId = null;
     }
 
-    buildUrl(token) {
-        const query = new URLSearchParams({
-            sample_rate: String(this.sampleRate),
-            token
-        });
+    buildTranscriberParams(token) {
+        const params = {
+            token,
+            sampleRate: this.sampleRate
+        };
+
         if (this.speechModel) {
-            query.set('speech_model', this.speechModel);
+            params.speechModel = this.speechModel;
         }
         if (this.encoding) {
-            query.set('encoding', this.encoding);
+            params.encoding = this.encoding;
         }
-        if (typeof this.streamingParams.endOfTurnConfidenceThreshold === 'number') {
-            query.set('end_of_turn_confidence_threshold', String(this.streamingParams.endOfTurnConfidenceThreshold));
+
+        const cfg = this.streamingParams || {};
+        if (typeof cfg.endOfTurnConfidenceThreshold === 'number') {
+            params.endOfTurnConfidenceThreshold = cfg.endOfTurnConfidenceThreshold;
         }
-        if (typeof this.streamingParams.minEndOfTurnSilenceWhenConfident === 'number') {
-            query.set('min_end_of_turn_silence_when_confident', String(this.streamingParams.minEndOfTurnSilenceWhenConfident));
+        if (typeof cfg.minEndOfTurnSilenceWhenConfident === 'number') {
+            params.minEndOfTurnSilenceWhenConfident = cfg.minEndOfTurnSilenceWhenConfident;
         }
-        if (typeof this.streamingParams.maxTurnSilence === 'number') {
-            query.set('max_turn_silence', String(this.streamingParams.maxTurnSilence));
+        if (typeof cfg.maxTurnSilence === 'number') {
+            params.maxTurnSilence = cfg.maxTurnSilence;
         }
-        if (typeof this.streamingParams.formatTurns === 'boolean') {
-            query.set('format_turns', String(this.streamingParams.formatTurns));
+        if (typeof cfg.filterProfanity === 'boolean') {
+            params.filterProfanity = cfg.filterProfanity;
         }
-        if (typeof this.streamingParams.filterProfanity === 'boolean') {
-            query.set('filter_profanity', String(this.streamingParams.filterProfanity));
+        if (typeof cfg.formatTurns === 'boolean') {
+            params.formatTurns = cfg.formatTurns;
         }
-        if (Array.isArray(this.streamingParams.keytermsPrompt) && this.streamingParams.keytermsPrompt.length > 0) {
-            query.set('keyterms_prompt', JSON.stringify(this.streamingParams.keytermsPrompt));
+        if (typeof cfg.languageDetection === 'boolean') {
+            params.languageDetection = cfg.languageDetection;
         }
-        return `${DEFAULT_BASE_URL}?${query.toString()}`;
+        if (typeof cfg.inactivityTimeout === 'number' && Number.isFinite(cfg.inactivityTimeout)) {
+            params.inactivityTimeout = cfg.inactivityTimeout;
+        }
+        if (typeof cfg.vadThreshold === 'number' && Number.isFinite(cfg.vadThreshold)) {
+            params.vadThreshold = cfg.vadThreshold;
+        }
+        if (Array.isArray(cfg.keytermsPrompt) && cfg.keytermsPrompt.length > 0) {
+            params.keytermsPrompt = cfg.keytermsPrompt;
+        } else if (Array.isArray(cfg.keyterms) && cfg.keyterms.length > 0) {
+            params.keytermsPrompt = cfg.keyterms;
+        }
+
+        return params;
+    }
+
+    attachTranscriberEvents(transcriber) {
+        transcriber.on('open', (event) => {
+            if (this.enableRawMessages) {
+                this.emit('raw-message', { type: 'Begin', ...event });
+            }
+            this.connected = true;
+            this.ready = true;
+            this.sessionId = event?.id || null;
+            this.sessionExpiresAt = typeof event?.expires_at === 'number'
+                ? new Date(event.expires_at * 1000)
+                : null;
+            log('info', `Streaming session opened (${this.sessionId || 'unknown'})`);
+            this.emit('ready', {
+                sessionId: this.sessionId,
+                expiresAt: this.sessionExpiresAt
+            });
+        });
+
+        transcriber.on('turn', (turn) => {
+            if (this.enableRawMessages) {
+                this.emit('raw-message', turn);
+            }
+            this.handleTurnEvent(turn);
+        });
+
+        transcriber.on('error', (error) => {
+            log('error', `StreamingTranscriber error: ${error.message}`);
+            this.emit('error', error);
+        });
+
+        transcriber.on('close', (code, reason) => {
+            if (this.transcriber !== transcriber) {
+                return;
+            }
+            const reasonText = typeof reason === 'string'
+                ? reason
+                : (reason && typeof reason.toString === 'function' ? reason.toString() : '');
+            log('warn', `Streaming session closed (${code}) ${reasonText}`);
+            this.cleanupConnectionState();
+            this.emit('disconnected', { code, reason: reasonText });
+        });
+    }
+
+    async connect() {
+        if (this.isReady()) {
+            return;
+        }
+        if (this.connectPromise) {
+            return this.connectPromise;
+        }
+
+        this.connectPromise = this.internalConnect();
+        try {
+            await this.connectPromise;
+        } finally {
+            this.connectPromise = null;
+        }
+    }
+
+    async internalConnect() {
+        await this.awaitTerminationIfNeeded();
+
+        const token = await this.fetchRealtimeToken();
+        this.sessionToken = token;
+        const params = this.buildTranscriberParams(token);
+
+        const transcriber = new StreamingTranscriber(params);
+        this.transcriber = transcriber;
+        this.attachTranscriberEvents(transcriber);
+
+        log('info', 'Connecting to AssemblyAI realtime via SDK');
+        try {
+            const begin = await transcriber.connect();
+            if (!this.ready) {
+                this.connected = true;
+                this.ready = true;
+                this.sessionId = begin?.id || null;
+                this.sessionExpiresAt = typeof begin?.expires_at === 'number'
+                    ? new Date(begin.expires_at * 1000)
+                    : null;
+                this.emit('ready', {
+                    sessionId: this.sessionId,
+                    expiresAt: this.sessionExpiresAt
+                });
+            }
+        } catch (error) {
+            log('error', `Failed to establish AssemblyAI realtime session: ${error.message}`);
+            try {
+                await transcriber.close(false);
+            } catch (closeError) {
+                log('warn', `Error cleaning up failed connection: ${closeError.message}`);
+            }
+            if (this.transcriber === transcriber) {
+                this.transcriber = null;
+            }
+            this.connected = false;
+            this.ready = false;
+            throw error;
+        }
+    }
+
+    handleTurnEvent(turn) {
+        if (!turn || typeof turn.transcript !== 'string') {
+            return;
+        }
+        const text = turn.transcript.trimEnd();
+        if (!text) {
+            return;
+        }
+        const now = Date.now();
+        const latencyMs = this.lastSendTs ? Math.max(0, now - this.lastSendTs) : undefined;
+        const isFinal = Boolean(turn.end_of_turn);
+        const payload = {
+            text,
+            type: isFinal ? 'final_transcript' : 'partial_transcript',
+            latencyMs,
+            confidence: typeof turn.end_of_turn_confidence === 'number'
+                ? turn.end_of_turn_confidence
+                : undefined
+        };
+        this.emit('transcription', payload);
+
+        if (isFinal) {
+            this.emit('turn-complete', {
+                turnOrder: typeof turn.turn_order === 'number' ? turn.turn_order : undefined,
+                transcript: text,
+                confidence: payload.confidence
+            });
+        }
     }
 
     async fetchRealtimeToken() {
@@ -121,171 +270,6 @@ class AssemblyLiveClient extends EventEmitter {
         return payload.token;
     }
 
-    async connect() {
-        if (this.ws && this.connected) {
-            return;
-        }
-
-        this.sessionToken = await this.fetchRealtimeToken();
-        const url = this.buildUrl(this.sessionToken);
-        log('info', 'Connecting to AssemblyAI universal streaming endpoint');
-
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            const timeout = setTimeout(() => {
-                if (settled) return;
-                settled = true;
-                reject(new Error('AssemblyAI realtime connection timed out.'));
-            }, 15000);
-
-            this.ws = new WebSocket(url);
-            this.ws.binaryType = 'arraybuffer';
-
-            this.ws.on('open', () => {
-                log('info', 'Streaming socket opened');
-                this.connected = true;
-            });
-
-            this.ws.on('message', (data) => {
-                this.handleMessage(data);
-                if (this.ready && !settled) {
-                    settled = true;
-                    clearTimeout(timeout);
-                    resolve();
-                }
-            });
-
-            this.ws.on('error', (error) => {
-                log('error', `Realtime socket error: ${error.message}`);
-                if (!settled) {
-                    settled = true;
-                    clearTimeout(timeout);
-                    reject(error);
-                } else {
-                    this.emit('error', error);
-                }
-            });
-
-            this.ws.on('close', (code, reason) => {
-                log('warn', `Realtime socket closed ${code} ${reason || ''}`);
-                this.connected = false;
-                this.ready = false;
-                this.emit('disconnected', { code, reason: reason?.toString() });
-                if (!settled) {
-                    settled = true;
-                    clearTimeout(timeout);
-                    reject(new Error(`AssemblyAI streaming closed before session began (${code})`));
-                }
-            });
-        });
-    }
-
-    sendRealtimeConfig() {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return;
-        }
-        const payload = this.buildUpdateConfiguration();
-        if (!payload) {
-            return;
-        }
-        try {
-            this.ws.send(JSON.stringify(payload));
-        } catch (error) {
-            log('error', `Failed to send configuration update: ${error.message}`);
-        }
-    }
-
-    buildUpdateConfiguration() {
-        const updates = {};
-        if (typeof this.streamingParams.endOfTurnConfidenceThreshold === 'number') {
-            updates.end_of_turn_confidence_threshold = this.streamingParams.endOfTurnConfidenceThreshold;
-        }
-        if (typeof this.streamingParams.minEndOfTurnSilenceWhenConfident === 'number') {
-            updates.min_end_of_turn_silence_when_confident = this.streamingParams.minEndOfTurnSilenceWhenConfident;
-        }
-        if (typeof this.streamingParams.maxTurnSilence === 'number') {
-            updates.max_turn_silence = this.streamingParams.maxTurnSilence;
-        }
-        if (Object.keys(updates).length === 0) {
-            return null;
-        }
-        return {
-            type: 'UpdateConfiguration',
-            ...updates
-        };
-    }
-
-    handleMessage(data) {
-        if (!data) {
-            return;
-        }
-
-        let message;
-        try {
-            if (typeof data === 'string') {
-                message = JSON.parse(data);
-            } else if (Buffer.isBuffer(data)) {
-                message = JSON.parse(data.toString('utf8'));
-            } else {
-                message = JSON.parse(Buffer.from(data).toString('utf8'));
-            }
-        } catch (error) {
-            log('warn', `Unable to parse realtime payload: ${error.message}`);
-            return;
-        }
-
-        if (this.enableRawMessages) {
-            this.emit('raw-message', message);
-        }
-
-        if (typeof message?.error === 'string') {
-            const error = new Error(message.error);
-            this.emit('error', error);
-            return;
-        }
-
-        const type = message.message_type || message.type;
-        switch (type) {
-            case 'Begin': {
-                this.ready = true;
-                this.sessionExpiresAt = message.expires_at ? new Date(message.expires_at * 1000) : null;
-                this.sendRealtimeConfig();
-                this.emit('ready', {
-                    sessionId: message.id,
-                    expiresAt: this.sessionExpiresAt
-                });
-                return;
-            }
-            case 'Turn': {
-                const text = message.transcript || '';
-                if (!text) {
-                    return;
-                }
-                const now = Date.now();
-                const latencyMs = this.lastSendTs ? Math.max(0, now - this.lastSendTs) : undefined;
-                this.emit('transcription', {
-                    text,
-                    type: message.end_of_turn ? 'final_transcript' : 'partial_transcript',
-                    latencyMs,
-                    confidence: message.end_of_turn_confidence
-                });
-                if (message.end_of_turn) {
-                    this.emit('turn-complete', {
-                        turnOrder: message.turn_order,
-                        transcript: text
-                    });
-                }
-                return;
-            }
-            case 'Termination':
-                log('info', 'AssemblyAI session terminated by server');
-                this.ready = false;
-                return;
-            default:
-                return;
-        }
-    }
-
     sendAudio(pcmBuffer, meta = {}) {
         if (!this.isReady()) {
             return false;
@@ -296,7 +280,7 @@ class AssemblyLiveClient extends EventEmitter {
 
         const sendTs = Date.now();
         try {
-            this.ws.send(pcmBuffer);
+            this.transcriber.sendAudio(pcmBuffer);
             this.audioChunkCount += 1;
             this.lastSendTs = sendTs;
             const instrumentationMeta = {
@@ -317,51 +301,61 @@ class AssemblyLiveClient extends EventEmitter {
     }
 
     sendAudioStreamEnd() {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return;
-        }
-        try {
-            this.ws.send(TERMINATE_MESSAGE);
-        } catch (error) {
-            log('warn', `Failed to send terminate message: ${error.message}`);
-        }
+        this.waitForTerminationOnClose = true;
     }
 
     sendKeepalive() {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return false;
-        }
-        try {
-            if (typeof this.ws.ping === 'function') {
-                this.ws.ping();
-            } else {
-                this.ws.send(JSON.stringify({ type: 'ping' }));
-            }
-            return true;
-        } catch (error) {
-            log('warn', `Failed to send websocket keepalive: ${error.message}`);
-            return false;
-        }
+        return this.isReady();
     }
 
     isReady() {
-        return Boolean(this.ws && this.connected && this.ready && this.ws.readyState === WebSocket.OPEN);
+        return Boolean(this.transcriber && this.connected && this.ready);
     }
 
-    disconnect() {
-        if (!this.ws) {
+    async disconnect() {
+        await this.awaitTerminationIfNeeded();
+        if (!this.transcriber) {
+            return;
+        }
+        const transcriber = this.transcriber;
+        const waitForTermination = this.waitForTerminationOnClose !== false;
+        this.waitForTerminationOnClose = true;
+
+        try {
+            const closePromise = transcriber.close(waitForTermination);
+            this.currentTermination = closePromise;
+            await closePromise;
+        } finally {
+            if (this.transcriber === transcriber) {
+                this.cleanupConnectionState();
+            }
+            this.currentTermination = null;
+        }
+    }
+
+    async awaitTerminationIfNeeded() {
+        if (!this.currentTermination) {
             return;
         }
         try {
-            this.sendAudioStreamEnd();
-            this.ws.close(1000, 'client_disconnect');
+            await this.currentTermination;
         } catch (error) {
-            log('warn', `Error closing realtime socket: ${error.message}`);
+            log('warn', `Termination wait failed: ${error.message}`);
         } finally {
-            this.ws = null;
-            this.connected = false;
-            this.ready = false;
+            this.currentTermination = null;
         }
+    }
+
+    cleanupConnectionState() {
+        this.transcriber = null;
+        this.connected = false;
+        this.ready = false;
+        this.audioChunkCount = 0;
+        this.lastSendTs = 0;
+        this.sessionToken = null;
+        this.sessionExpiresAt = null;
+        this.sessionId = null;
+        this.waitForTerminationOnClose = true;
     }
 }
 

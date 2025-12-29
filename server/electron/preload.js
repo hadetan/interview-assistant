@@ -36,9 +36,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getChunkTimesliceMs: () => {
         const raw = process.env.TRANSCRIPTION_CHUNK_TIMESLICE_MS || process.env.CHUNK_TIMESLICE_MS || '';
         const parsed = parseInt(String(raw || ''), 10);
-        // Use the current app default of 120ms if parsing fails or value is out of bounds
+        const DEFAULT_TIMESLICE_MS = 80;
+        // Use a low-latency default if parsing fails or value is out of bounds
         if (!Number.isFinite(parsed) || parsed <= 0) {
-            return 200;
+            return DEFAULT_TIMESLICE_MS;
         }
         // reasonable bounds to avoid extreme values (< 20ms or > 5000ms)
         const MIN = 20; const MAX = 5000;

@@ -30,6 +30,9 @@ module.exports = function loadTranscriptionConfig() {
         TRANSCRIPTION_PROVIDER,
         ASSEMBLYAI_API_KEY,
         TRANSCRIPTION_FFMPEG_PATH,
+        TRANSCRIPTION_MAX_PENDING_CHUNK_MS,
+        TRANSCRIPTION_TARGET_PCM_CHUNK_MS,
+        TRANSCRIPTION_SILENCE_FILLER_INTERVAL_MS
     } = process.env;
 
     const transcriptAiConfig = {
@@ -54,6 +57,10 @@ module.exports = function loadTranscriptionConfig() {
         assemblyParams.endOfTurnConfidenceThreshold = endOfTurnConfidence;
     }
 
+    const maxPendingChunkMs = clamp(toInteger(TRANSCRIPTION_MAX_PENDING_CHUNK_MS, 45), 20, 200);
+    const targetPcmChunkMs = clamp(toInteger(TRANSCRIPTION_TARGET_PCM_CHUNK_MS, 60), 20, 160);
+    const silenceFillerIntervalMs = clamp(toInteger(TRANSCRIPTION_SILENCE_FILLER_INTERVAL_MS, 240), 80, 2000);
+
     return {
         provider,
         ffmpegPath,
@@ -65,7 +72,9 @@ module.exports = function loadTranscriptionConfig() {
         },
         streaming: {
             maxChunkBytes: 128 * 1024,
-            maxPendingChunkMs: 80,
+            maxPendingChunkMs,
+            targetPcmChunkMs,
+            silenceFillerIntervalMs,
             heartbeatIntervalMs: 250,
             silenceNotifyMs: 600,
             silenceSuppressMs: 900,

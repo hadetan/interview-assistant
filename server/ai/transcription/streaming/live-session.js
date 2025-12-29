@@ -12,6 +12,9 @@ const {
     computeLatencyBreakdown
 } = require('./helpers');
 
+const PCM_SAMPLE_RATE = 16000;
+const PCM_BYTES_PER_SAMPLE = 2;
+
 /**
  * Live API Session using WebSocket connection with persistent audio conversion.
  * Uses a long-running ffmpeg process to convert WebM/Opus stream to PCM.
@@ -42,9 +45,29 @@ class LiveStreamingSession extends EventEmitter {
         this.lastServerTranscript = '';
         this.pcmBuffer = Buffer.alloc(0);
         this.pendingFlushTimer = null;
-        this.maxPendingChunkMs = clampNumber(numOr(this.streamingConfig.maxPendingChunkMs, 60), 30, 90);
+        this.maxPendingChunkMs = clampNumber(numOr(this.streamingConfig.maxPendingChunkMs, 60), 20, 120);
         this.firstChunkMeta = null;
-        this.TARGET_CHUNK_SIZE = 3200; // Target chunk size: ~100ms of audio (16000Hz * 2 bytes * 0.1s = 3200 bytes)
+
+        const minSamples = Math.round(PCM_SAMPLE_RATE * 0.02); // 20ms floor
+        const configuredChunkBytes = numOr(this.streamingConfig.targetPcmChunkBytes, NaN);
+        const targetChunkMs = clampNumber(numOr(this.streamingConfig.targetPcmChunkMs, 60), 20, 160);
+
+        let targetSamples;
+        if (Number.isFinite(configuredChunkBytes) && configuredChunkBytes > 0) {
+            const configuredSamples = Math.round(configuredChunkBytes / PCM_BYTES_PER_SAMPLE);
+            targetSamples = Math.max(minSamples, configuredSamples);
+            this.targetChunkDurationMs = Math.max(1, Math.round((targetSamples / PCM_SAMPLE_RATE) * 1000));
+        } else {
+            targetSamples = Math.max(minSamples, Math.round((targetChunkMs / 1000) * PCM_SAMPLE_RATE));
+            this.targetChunkDurationMs = targetChunkMs;
+        }
+
+        this.targetChunkBytes = targetSamples * PCM_BYTES_PER_SAMPLE;
+        this.TARGET_CHUNK_SIZE = this.targetChunkBytes;
+        this.chunkPartCounter = 0;
+        this.suppressedSilenceMs = 0;
+        this.lastFillerSentAt = 0;
+        this.silenceFillerIntervalMs = clampNumber(numOr(this.streamingConfig.silenceFillerIntervalMs, 240), 100, 1500);
         this.heartbeatInterval = null;
         this.heartbeatIntervalMs = Math.max(100, numOr(this.streamingConfig.heartbeatIntervalMs, 250));
         this.silenceDurationMs = 0;
@@ -239,6 +262,7 @@ class LiveStreamingSession extends EventEmitter {
                 throw new Error('Audio converter is not properly configured.');
             }
             this.audioConverter.start();
+            log('info', `Session ${this.id} PCM target ~${this.targetChunkDurationMs}ms (${this.targetChunkBytes} bytes)`);
             this.startHeartbeat();
             this.startSocketKeepalive();
 
@@ -599,12 +623,65 @@ class LiveStreamingSession extends EventEmitter {
         if (!this.pcmBuffer || this.pcmBuffer.length === 0) {
             return false;
         }
-        const chunkToSend = this.pcmBuffer;
-        const metaToSend = this.firstChunkMeta;
+
+        this.clearPendingFlushTimer();
+
+        const shouldForce = Boolean(force);
+        const targetBytes = Math.max(this.targetChunkBytes || this.TARGET_CHUNK_SIZE || 3200, PCM_BYTES_PER_SAMPLE * Math.round(PCM_SAMPLE_RATE * 0.02));
+        const workingBuffer = this.pcmBuffer;
+        const baseMeta = this.firstChunkMeta;
+
+        let offsetBytes = 0;
+        let elapsedMs = 0;
+        let partIndex = 0;
+        let sentAny = false;
+
+        const sendSlice = (sliceBuffer, sliceMeta) => {
+            const ok = this.processReadyChunk(sliceBuffer, sliceMeta, { force: shouldForce });
+            if (ok) {
+                sentAny = true;
+            }
+        };
+
+        while ((workingBuffer.length - offsetBytes) >= targetBytes) {
+            const slice = workingBuffer.subarray(offsetBytes, offsetBytes + targetBytes);
+            const durationMs = computeChunkDurationMs(slice);
+            const metaForSlice = this.decorateChunkMeta(baseMeta, {
+                partIndex,
+                offsetMs: elapsedMs,
+                chunkBytes: slice.length,
+                chunkDurationMs: durationMs
+            });
+            sendSlice(slice, metaForSlice);
+            offsetBytes += targetBytes;
+            elapsedMs += durationMs;
+            partIndex += 1;
+        }
+
+        const remainingBytes = workingBuffer.length - offsetBytes;
+        if (remainingBytes > 0) {
+            const remainder = workingBuffer.subarray(offsetBytes);
+            if (shouldForce) {
+                const durationMs = computeChunkDurationMs(remainder);
+                const metaForSlice = this.decorateChunkMeta(baseMeta, {
+                    partIndex,
+                    offsetMs: elapsedMs,
+                    chunkBytes: remainder.length,
+                    chunkDurationMs: durationMs
+                });
+                sendSlice(remainder, metaForSlice);
+                offsetBytes += remainingBytes;
+            } else {
+                this.pcmBuffer = Buffer.from(remainder);
+                this.firstChunkMeta = this.buildPendingMeta(baseMeta, elapsedMs);
+                this.schedulePendingFlush();
+                return sentAny;
+            }
+        }
+
         this.pcmBuffer = Buffer.alloc(0);
         this.firstChunkMeta = null;
-        this.clearPendingFlushTimer();
-        return this.processReadyChunk(chunkToSend, metaToSend, { force });
+        return sentAny;
     }
 
     processReadyChunk(chunkToSend, metaToSend, options = {}) {
@@ -639,18 +716,21 @@ class LiveStreamingSession extends EventEmitter {
 
         if (!treatAsSpeech) {
             this.silenceDurationMs = Math.min(this.silenceDurationMs + chunkDurationMs, 60_000);
+            this.suppressedSilenceMs = Math.min(60_000, this.suppressedSilenceMs + chunkDurationMs);
             if (!wasSilent && this.silenceDurationMs >= this.silenceNotifyMs) {
                 this.emitHeartbeat('silence');
             }
         } else {
             this.silenceDurationMs = 0;
             this.lastSpeechAt = Date.now();
+            this.suppressedSilenceMs = 0;
             if (wasSilent) {
                 this.emitHeartbeat('speech');
             }
         }
 
         if (!this.vadInstance && !treatAsSpeech && this.silenceDurationMs >= this.silenceSuppressMs && !force) {
+            this.maybeSendSilenceFiller(metaToSend, chunkDurationMs);
             if (Math.random() < 0.02) {
                 log('info', `Session ${this.id} suppressing ${chunkDurationMs}ms silent chunk (rms ${Math.round(stats.rms)})`);
             }
@@ -658,6 +738,7 @@ class LiveStreamingSession extends EventEmitter {
         }
 
         if (!shouldSend && !force) {
+            this.maybeSendSilenceFiller(metaToSend, chunkDurationMs);
             if (Math.random() < 0.02) {
                 log('info', `Session ${this.id} VAD suppressed ${chunkDurationMs}ms chunk (rms ${Math.round(stats.rms)})`);
             }
@@ -684,6 +765,9 @@ class LiveStreamingSession extends EventEmitter {
             return false;
         }
 
+        this.suppressedSilenceMs = 0;
+        this.lastFillerSentAt = Date.now();
+
         if (typeof conversionMs === 'number') {
             this.lastConversionMs = conversionMs;
             if (Math.random() < 0.05) {
@@ -692,6 +776,90 @@ class LiveStreamingSession extends EventEmitter {
         }
 
         return true;
+    }
+
+    maybeSendSilenceFiller(baseMeta, chunkDurationMs) {
+        if (this.silenceFillerIntervalMs <= 0) {
+            return;
+        }
+        const now = Date.now();
+        if (this.suppressedSilenceMs < this.silenceFillerIntervalMs) {
+            return;
+        }
+        if ((now - this.lastFillerSentAt) < this.silenceFillerIntervalMs) {
+            return;
+        }
+
+        const minSamples = Math.max(Math.round(PCM_SAMPLE_RATE * 0.02), 1);
+        const targetSamples = Math.max(minSamples, Math.round((this.targetChunkBytes || this.TARGET_CHUNK_SIZE || minSamples * PCM_BYTES_PER_SAMPLE) / PCM_BYTES_PER_SAMPLE));
+        const fillerBuffer = Buffer.alloc(targetSamples * PCM_BYTES_PER_SAMPLE);
+        const fillerDurationMs = computeChunkDurationMs(fillerBuffer);
+        let fillerMeta = this.decorateChunkMeta(baseMeta, {
+            partIndex: 0,
+            offsetMs: 0,
+            chunkBytes: fillerBuffer.length,
+            chunkDurationMs: fillerDurationMs
+        }) || {};
+        if (!baseMeta) {
+            fillerMeta.sequence = (this.lastChunkMeta?.sequence ?? -1) + 0.001;
+            fillerMeta.chunkPartId = this.chunkPartCounter;
+            this.chunkPartCounter += 1;
+        }
+        fillerMeta.filler = true;
+        fillerMeta.silenceMs = this.suppressedSilenceMs;
+
+        if (typeof this.client.isReady === 'function' && !this.client.isReady()) {
+            return;
+        }
+
+        const sent = this.client.sendAudio(fillerBuffer, fillerMeta);
+        if (sent) {
+            this.lastFillerSentAt = now;
+            this.suppressedSilenceMs = 0;
+            if (Math.random() < 0.08) {
+                log('debug', `Session ${this.id} sent ${fillerDurationMs}ms silence filler`);
+            }
+        }
+    }
+
+    decorateChunkMeta(baseMeta, details = {}) {
+        if (!baseMeta) {
+            return undefined;
+        }
+        const meta = { ...baseMeta };
+        const {
+            partIndex = 0,
+            offsetMs = 0,
+            chunkBytes = 0,
+            chunkDurationMs = null
+        } = details;
+
+        if (typeof baseMeta.segmentProducedTs === 'number') {
+            meta.segmentProducedTs = baseMeta.segmentProducedTs + offsetMs;
+        }
+        meta.sequencePart = partIndex;
+        meta.chunkPartId = this.chunkPartCounter;
+        meta.chunkBytes = chunkBytes;
+        meta.chunkDurationMs = chunkDurationMs;
+        meta.chunkOffsetMs = offsetMs;
+        this.chunkPartCounter += 1;
+        return meta;
+    }
+
+    buildPendingMeta(baseMeta, offsetMs) {
+        if (!baseMeta) {
+            return null;
+        }
+        const meta = { ...baseMeta };
+        if (typeof baseMeta.segmentProducedTs === 'number') {
+            meta.segmentProducedTs = baseMeta.segmentProducedTs + offsetMs;
+        }
+        delete meta.sequencePart;
+        delete meta.chunkPartId;
+        delete meta.chunkBytes;
+        delete meta.chunkDurationMs;
+        delete meta.chunkOffsetMs;
+        return meta;
     }
 }
 
