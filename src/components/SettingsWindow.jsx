@@ -234,7 +234,7 @@ function SettingsWindow() {
             if (!result?.ok) {
                 throw new Error(result?.error || 'Connection failed.');
             }
-            setStatus({ type: 'success', message: 'Connection verified. Select a model and save to finish.' });
+            setStatus({ type: 'success', message: 'Connection verified. Continue by saving the settings' });
             setConnectionVerified(true);
             await loadModels(provider, {
                 apiKeyOverride: trimmedKey,
@@ -469,7 +469,16 @@ function SettingsWindow() {
         </div>
     );
 
-    if (!initialized) return <div className="loading">Initializing…</div>;
+    if (!initialized) {
+        return (
+            <div className="settings-window loading-state">
+                <div className="settings-loading-card" role="status" aria-live="polite">
+                    <div className="settings-loading-spinner" aria-hidden="true" />
+                    <p>Initializing settings…</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="settings-window">

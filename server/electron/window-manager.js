@@ -396,7 +396,7 @@ const createWindowManager = ({
         hideOverlayWindows();
 
         settingsWindow = new BrowserWindow({
-            width: 720,
+            width: 900,
             height: 640,
             frame: true,
             transparent: false,
