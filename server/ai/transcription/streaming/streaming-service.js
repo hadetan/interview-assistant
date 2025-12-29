@@ -1,29 +1,41 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { AssemblyLiveClient } = require('./providers/assembly-client');
+const { DeepgramLiveClient } = require('./providers/deepgram-client');
 const { MockStreamingClient } = require('./mock-client');
 const { LiveStreamingSession } = require('./live-session');
 const { log } = require('./helpers');
+
+const SUPPORTED_PROVIDERS = new Set(['assembly', 'deepgram']);
 
 class StreamingTranscriptionService extends EventEmitter {
     constructor(config = {}) {
         super();
         this.config = config;
         this.ffmpegPath = config?.ffmpegPath || null;
+        this.provider = (config?.provider || 'assembly').toLowerCase();
+        this.providerConfig = config?.providerConfig || {};
         this.sessions = new Map();
         this.ready = false;
     }
 
     async init() {
-        const apiKey = this.config.providerConfig?.assembly?.apiKey;
-        if (!apiKey) {
-            throw new Error('ASSEMBLYAI_API_KEY must be configured.');
+        if (!SUPPORTED_PROVIDERS.has(this.provider)) {
+            throw new Error(`Unsupported transcription provider: ${this.provider}`);
         }
+
+        const providerSettings = this.providerConfig?.[this.provider] || {};
+
+        if (!this.config.streaming?.mock && !providerSettings?.apiKey) {
+            throw new Error(`TRANSCRIPTION_API_KEY must be configured for provider ${this.provider}.`);
+        }
+
         this.ready = true;
+        const providerLabel = this.provider === 'deepgram' ? 'Deepgram realtime' : 'AssemblyAI realtime';
         if (this.ffmpegPath) {
-            log('info', `Streaming transcription service initialized (AssemblyAI realtime) - ffmpeg=${this.ffmpegPath}`);
+            log('info', `Streaming transcription service initialized (${providerLabel}) - ffmpeg=${this.ffmpegPath}`);
         } else {
-            log('warn', `Streaming transcription service initialized without explicit FFmpeg path - (falling back to system PATH)`);
+            log('warn', `Streaming transcription service initialized (${providerLabel}) without explicit FFmpeg path - (falling back to system PATH)`);
         }
     }
 
@@ -38,8 +50,22 @@ class StreamingTranscriptionService extends EventEmitter {
             return new MockStreamingClient();
         }
 
+        const providerSettings = this.providerConfig?.[this.provider] || {};
+
+        if (this.provider === 'deepgram') {
+            const liveOptions = { ...(this.config.streaming?.deepgramParams || {}) };
+            return new DeepgramLiveClient({
+                apiKey: providerSettings.apiKey,
+                sampleRate: liveOptions.sample_rate,
+                encoding: liveOptions.encoding,
+                channels: liveOptions.channels,
+                liveOptions,
+                clientOptions: providerSettings.clientOptions || {}
+            });
+        }
+
         return new AssemblyLiveClient({
-            apiKey: this.config.providerConfig?.assembly?.apiKey,
+            apiKey: providerSettings.apiKey,
             streamingParams: this.config.streaming?.assemblyParams || {}
         });
     }

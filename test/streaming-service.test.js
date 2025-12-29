@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 
 const { StreamingTranscriptionService } = require('../server/ai/transcription/streaming/streaming-service');
+const { DeepgramLiveClient } = require('../server/ai/transcription/streaming/providers/deepgram-client');
 
 test('StreamingTranscriptionService starts session, receives update, and stops', async () => {
     const service = new StreamingTranscriptionService({
@@ -56,4 +57,21 @@ test('StreamingTranscriptionService starts session, receives update, and stops',
 
     await service.stopSession(sessionId);
     assert.equal(service.sessions.size, 0);
+});
+
+test('StreamingTranscriptionService creates Deepgram client when configured', async () => {
+    const service = new StreamingTranscriptionService({
+        provider: 'deepgram',
+        providerConfig: { deepgram: { apiKey: 'dg-test-key' } },
+        streaming: {
+            deepgramParams: {
+                model: 'nova-3',
+                sample_rate: 16000
+            }
+        }
+    });
+
+    await service.init();
+    const client = service.createClient();
+    assert.ok(client instanceof DeepgramLiveClient);
 });

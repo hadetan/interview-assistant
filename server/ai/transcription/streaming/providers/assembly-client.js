@@ -33,7 +33,7 @@ class AssemblyLiveClient extends EventEmitter {
         } = options;
 
         if (!apiKey) {
-            throw new Error('AssemblyLiveClient requires ASSEMBLYAI_API_KEY.');
+            throw new Error('AssemblyLiveClient requires TRANSCRIPTION_API_KEY.');
         }
 
         this.apiKey = apiKey;

@@ -28,7 +28,7 @@ const clamp = (value, min, max) => {
 module.exports = function loadTranscriptionConfig() {
     const {
         TRANSCRIPTION_PROVIDER,
-        ASSEMBLYAI_API_KEY,
+        TRANSCRIPTION_API_KEY,
         TRANSCRIPTION_FFMPEG_PATH,
         TRANSCRIPTION_MAX_PENDING_CHUNK_MS,
         TRANSCRIPTION_TARGET_PCM_CHUNK_MS,
@@ -42,6 +42,9 @@ module.exports = function loadTranscriptionConfig() {
     }
     const provider = (TRANSCRIPTION_PROVIDER || 'assembly').toLowerCase();
     const ffmpegPath = resolveFfmpegPath(TRANSCRIPTION_FFMPEG_PATH);
+    const apiKey = typeof TRANSCRIPTION_API_KEY === 'string' && TRANSCRIPTION_API_KEY.trim() !== ''
+        ? TRANSCRIPTION_API_KEY.trim()
+        : null;
 
     const assemblyParams = {};
     const maxTurnSilence = toInteger(transcriptAiConfig.ASSEMBLYAI_MAX_TURN_SILENCE_MS, null);
@@ -60,13 +63,26 @@ module.exports = function loadTranscriptionConfig() {
     const maxPendingChunkMs = clamp(toInteger(TRANSCRIPTION_MAX_PENDING_CHUNK_MS, 45), 20, 200);
     const targetPcmChunkMs = clamp(toInteger(TRANSCRIPTION_TARGET_PCM_CHUNK_MS, 60), 20, 160);
     const silenceFillerIntervalMs = clamp(toInteger(TRANSCRIPTION_SILENCE_FILLER_INTERVAL_MS, 240), 80, 2000);
+    const deepgramParams = {
+        model: 'nova-3',
+        encoding: 'linear16',
+        sample_rate: 16000,
+        channels: 1,
+        smart_format: true,
+        interim_results: true,
+        punctuate: true
+    };
 
     return {
         provider,
         ffmpegPath,
         providerConfig: {
             assembly: {
-                apiKey: ASSEMBLYAI_API_KEY || null,
+                apiKey,
+                ffmpegPath
+            },
+            deepgram: {
+                apiKey,
                 ffmpegPath
             }
         },
@@ -90,7 +106,8 @@ module.exports = function loadTranscriptionConfig() {
                 speechHoldMs: 300,
                 silenceHoldMs: 200
             },
-            assemblyParams
+            assemblyParams,
+            deepgramParams
         }
     };
 };

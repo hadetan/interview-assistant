@@ -98,6 +98,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@deepgram/sdk": "^3.13.0",
     "@echogarden/fvad-wasm": "^0.2.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "assemblyai": "^4.22.1",
