@@ -160,6 +160,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         testConnection: (payload) => ipcRenderer.invoke('settings:test-connection', payload),
         listModels: (payload) => ipcRenderer.invoke('settings:list-models', payload),
         close: () => ipcRenderer.invoke('settings:close'),
+        openPreview: () => ipcRenderer.invoke('settings:open-preview'),
+        closePreview: () => ipcRenderer.invoke('settings:close-preview'),
+        syncPreview: (payload) => ipcRenderer.send('settings:preview-sync', payload),
         onGeneralUpdated: (callback) => {
             if (typeof callback !== 'function') {
                 return () => {};
@@ -167,6 +170,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
             const listener = (_event, payload) => callback(payload);
             ipcRenderer.on('settings:general-updated', listener);
             return () => ipcRenderer.removeListener('settings:general-updated', listener);
+        },
+        onPreviewClosed: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = () => callback();
+            ipcRenderer.on('settings:preview-closed', listener);
+            return () => ipcRenderer.removeListener('settings:preview-closed', listener);
+        },
+        onPreviewSync: (callback) => {
+            if (typeof callback !== 'function') {
+                return () => {};
+            }
+            const listener = (_event, payload) => callback(payload);
+            ipcRenderer.on('settings:preview-sync', listener);
+            return () => ipcRenderer.removeListener('settings:preview-sync', listener);
         }
     },
     overlay: {

@@ -96,6 +96,8 @@ const createWindowManager = ({
     let transcriptWindow = null;
     let lastAppliedTranscriptHeight = FALLBACK_TRANSCRIPT_HEIGHT;
     let settingsWindow = null;
+    let previewWindow = null;
+    let lastAppliedPreviewHeight = FALLBACK_TRANSCRIPT_HEIGHT;
     let overlayVisibilitySnapshot = null;
     let permissionWindow = null;
     const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
@@ -193,6 +195,110 @@ const createWindowManager = ({
         targetWindow.loadFile(resolveRendererEntry(), { query: { window: windowVariant } });
     };
 
+    const getPreviewWindow = () => (previewWindow && !previewWindow.isDestroyed() ? previewWindow : null);
+
+    const getPreviewBounds = () => {
+        const target = getPreviewWindow();
+        return target ? target.getBounds() : null;
+    };
+
+    const resizePreviewWindow = (nextHeight) => {
+        const target = getPreviewWindow();
+        if (!target) {
+            return false;
+        }
+        const normalizedHeight = Math.max(1, Math.round(nextHeight));
+        if (normalizedHeight === lastAppliedPreviewHeight) {
+            return false;
+        }
+        const targetWidth = getTranscriptContentWidth();
+        lastAppliedPreviewHeight = normalizedHeight;
+        try {
+            target.setContentSize(targetWidth, normalizedHeight);
+            return true;
+        } catch (_error) {
+            return false;
+        }
+    };
+
+    const clampPreviewHeightWithinWorkArea = () => {
+        const target = getPreviewWindow();
+        if (!target) {
+            return;
+        }
+        const bounds = getPreviewBounds();
+        const currentHeight = bounds?.height ?? lastAppliedPreviewHeight;
+        const { minHeight, maxHeight } = resolveTranscriptHeightBounds();
+        const clamped = Math.min(Math.max(currentHeight, minHeight), maxHeight);
+        if (clamped !== currentHeight) {
+            resizePreviewWindow(clamped);
+        }
+    };
+
+    const centerSettingsWindow = () => {
+        const settings = getSettingsWindow?.();
+        if (!settings) {
+            return;
+        }
+
+        const settingsBounds = settings.getBounds?.();
+        if (!settingsBounds) {
+            return;
+        }
+
+        const workArea = resolveWorkArea(screen, settingsBounds);
+        const nextX = workArea.x + Math.round(Math.max(0, (workArea.width - settingsBounds.width) / 2));
+        const nextY = workArea.y + Math.round(Math.max(0, (workArea.height - settingsBounds.height) / 2));
+
+        settings.setPosition?.(nextX, nextY);
+    };
+
+    const positionSettingsWindowBelowPreview = () => {
+        const preview = getPreviewWindow();
+        const settings = getSettingsWindow?.();
+        if (!preview || !settings) {
+            return;
+        }
+
+        const previewBounds = preview.getBounds?.();
+        const settingsBounds = settings.getBounds?.();
+        if (!previewBounds || !settingsBounds) {
+            return;
+        }
+
+        const workArea = resolveWorkArea(screen, previewBounds);
+        const gap = Number.isFinite(windowVerticalGap) ? Math.max(0, windowVerticalGap) : 0;
+
+        let targetX = previewBounds.x + Math.round((previewBounds.width - settingsBounds.width) / 2);
+        let targetY = previewBounds.y + previewBounds.height + gap;
+
+        const minX = workArea.x;
+        const maxX = workArea.x + Math.max(0, workArea.width - settingsBounds.width);
+        if (Number.isFinite(targetX)) {
+            if (targetX < minX) {
+                targetX = minX;
+            } else if (targetX > maxX) {
+                targetX = maxX;
+            }
+        } else {
+            targetX = settingsBounds.x;
+        }
+
+        const minY = workArea.y;
+        const maxY = workArea.y + Math.max(0, workArea.height - settingsBounds.height);
+        if (Number.isFinite(targetY)) {
+            if (targetY < minY) {
+                targetY = minY;
+            } else if (targetY > maxY) {
+                targetY = maxY;
+            }
+        } else {
+            targetY = settingsBounds.y;
+        }
+
+        settings.setPosition?.(Math.round(targetX), Math.round(targetY));
+    };
+
     const positionOverlayWindows = () => {
         if (!transcriptWindow || transcriptWindow.isDestroyed()) {
             return;
@@ -214,6 +320,20 @@ const createWindowManager = ({
         const transcriptX = originX + Math.round((areaWidth - transcriptBounds.width) / 2);
         const transcriptY = originY + windowTopMargin;
         transcriptWindow.setPosition(transcriptX, transcriptY);
+
+        const preview = getPreviewWindow();
+        if (preview) {
+            clampPreviewHeightWithinWorkArea();
+            const previewBounds = preview.getBounds();
+            const previewX = transcriptX;
+            const previewY = Math.min(
+                transcriptY,
+                originY + Math.max(0, (workArea?.height ?? previewBounds.height) - previewBounds.height)
+            );
+            preview.setPosition(previewX, previewY);
+        }
+
+        positionSettingsWindowBelowPreview();
     };
 
     const moveOverlaysBy = (dx, dy) => {
@@ -331,6 +451,98 @@ const createWindowManager = ({
 
     const getTranscriptWindow = () => transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow : null;
 
+    const createPreviewWindow = () => {
+        if (previewWindow && !previewWindow.isDestroyed()) {
+            if (!previewWindow.isVisible()) {
+                previewWindow.showInactive?.();
+            }
+            return previewWindow;
+        }
+
+        const transcriptBounds = getTranscriptBounds();
+        const workArea = resolveWorkArea(screen, transcriptBounds);
+        const dynamicWidth = Math.max(1, Math.round((workArea.width || DEFAULT_TRANSCRIPT_WIDTH) * 0.5));
+        const { minHeight, maxHeight } = resolveTranscriptHeightBounds();
+        const dynamicHeight = Math.min(Math.max(lastAppliedPreviewHeight, minHeight), maxHeight);
+
+        previewWindow = new BrowserWindow({
+            width: dynamicWidth,
+            height: dynamicHeight,
+            transparent: true,
+            frame: false,
+            icon: blankNativeImage,
+            skipTaskbar: true,
+            autoHideMenuBar: true,
+            resizable: false,
+            movable: false,
+            minimizable: false,
+            maximizable: false,
+            focusable: false,
+            show: false,
+            hasShadow: false,
+            backgroundColor: '#00000000',
+            hiddenInMissionControl: stealthModeEnabled,
+            acceptFirstMouse: true,
+            useContentSize: true,
+            enablePreferredSizeMode: true,
+            webPreferences: overlayWebPreferences
+        });
+
+        const previewAlwaysOnTopLevel = stealthModeEnabled ? 'screen-saver' : 'floating';
+        previewWindow.setAlwaysOnTop(true, previewAlwaysOnTopLevel);
+        previewWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+        previewWindow.setIgnoreMouseEvents(true);
+        previewWindow.setFullScreenable(false);
+
+        resizePreviewWindow(dynamicHeight);
+
+        previewWindow.once('ready-to-show', () => {
+            previewWindow?.showInactive?.();
+            positionOverlayWindows();
+            if (!transcriptWindow || transcriptWindow.isDestroyed()) {
+                clampPreviewHeightWithinWorkArea();
+                const previewBounds = previewWindow?.getBounds?.();
+                const workArea = resolveWorkArea(screen, previewBounds);
+                const areaWidth = workArea?.width ?? previewBounds?.width ?? dynamicWidth;
+                const areaHeight = workArea?.height ?? previewBounds?.height ?? dynamicHeight;
+                const previewX = (workArea?.x ?? 0) + Math.round((areaWidth - (previewBounds?.width ?? dynamicWidth)) / 2);
+                const desiredY = (workArea?.y ?? 0) + windowTopMargin;
+                const maxY = (workArea?.y ?? 0) + Math.max(0, areaHeight - (previewBounds?.height ?? dynamicHeight));
+                const previewY = Math.min(desiredY, maxY);
+                previewWindow?.setPosition?.(previewX, previewY);
+            }
+            positionSettingsWindowBelowPreview();
+        });
+
+        previewWindow.on('closed', () => {
+            previewWindow = null;
+            lastAppliedPreviewHeight = FALLBACK_TRANSCRIPT_HEIGHT;
+            const settings = getSettingsWindow();
+            if (settings && !settings.isDestroyed()) {
+                try {
+                    settings.webContents.send('settings:preview-closed');
+                } catch (error) {
+                    console.warn('[WindowManager] Failed to notify settings window about preview closure', error);
+                }
+                centerSettingsWindow();
+            }
+        });
+
+        previewWindow.webContents.on('preferred-size-changed', (_event, size) => {
+            if (!size || typeof size.height !== 'number') {
+                return;
+            }
+            const applied = resizePreviewWindow(size.height);
+            if (applied) {
+                positionOverlayWindows();
+            }
+            positionSettingsWindowBelowPreview();
+        });
+
+        loadRendererForWindow(previewWindow, 'transcript-preview');
+        return previewWindow;
+    };
+
     const hideOverlayWindows = () => {
         const transcript = getTranscriptWindow();
         overlayVisibilitySnapshot = {
@@ -368,6 +580,18 @@ const createWindowManager = ({
 
         overlayVisibilitySnapshot = null;
         positionOverlayWindows();
+    };
+
+    const destroyPreviewWindow = () => {
+        if (!previewWindow || previewWindow.isDestroyed()) {
+            previewWindow = null;
+            return;
+        }
+        try {
+            previewWindow.close();
+        } catch (error) {
+            console.warn('[WindowManager] Failed to close preview window', error);
+        }
     };
 
     const destroySettingsWindow = () => {
@@ -423,6 +647,7 @@ const createWindowManager = ({
 
         settingsWindow.on('closed', () => {
             settingsWindow = null;
+            destroyPreviewWindow();
             restoreOverlayWindows();
         });
 
@@ -510,10 +735,13 @@ const createWindowManager = ({
         destroySettingsWindow,
         createPermissionWindow,
         destroyPermissionWindow,
+        createPreviewWindow,
+        destroyPreviewWindow,
         positionOverlayWindows,
         moveOverlaysBy,
         getTranscriptWindow,
         getSettingsWindow,
+        getPreviewWindow,
         getPermissionWindow,
         hideOverlayWindows,
         restoreOverlayWindows,

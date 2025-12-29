@@ -64,6 +64,7 @@ const registerSettingsHandlers = ({
         const hasSecret = provider ? await secureStore.hasAssistantApiKey(provider) : false;
 
         const general = settingsStore.getGeneralSettings();
+        const previewOpen = Boolean(windowManager?.getPreviewWindow?.());
 
         return {
             ok: true,
@@ -74,6 +75,7 @@ const registerSettingsHandlers = ({
                 providerConfig
             },
             general,
+            previewOpen,
             missing: {
                 provider: !provider,
                 model: !model,
@@ -248,6 +250,54 @@ const registerSettingsHandlers = ({
         } catch (error) {
             console.warn('[Settings] Failed to close settings window', error);
             return { ok: false, error: error?.message || 'Failed to close settings window.' };
+        }
+    });
+
+    ipcMain.handle('settings:open-preview', async () => {
+        try {
+            const preview = windowManager?.createPreviewWindow?.();
+            if (!preview) {
+                return { ok: false, error: 'Unable to open preview window.' };
+            }
+            const general = settingsStore.getGeneralSettings();
+            const sendGeneral = () => {
+                try {
+                    preview.webContents.send('settings:general-updated', { general });
+                } catch (error) {
+                    console.warn('[Settings] Failed to sync general settings to preview window', error);
+                }
+            };
+            if (preview.webContents.isLoading()) {
+                preview.webContents.once('did-finish-load', sendGeneral);
+            } else {
+                sendGeneral();
+            }
+            return { ok: true };
+        } catch (error) {
+            console.warn('[Settings] Failed to open preview window', error);
+            return { ok: false, error: error?.message || 'Failed to open preview window.' };
+        }
+    });
+
+    ipcMain.handle('settings:close-preview', async () => {
+        try {
+            windowManager?.destroyPreviewWindow?.();
+            return { ok: true };
+        } catch (error) {
+            console.warn('[Settings] Failed to close preview window', error);
+            return { ok: false, error: error?.message || 'Failed to close preview window.' };
+        }
+    });
+
+    ipcMain.on('settings:preview-sync', (_event, payload = {}) => {
+        const preview = windowManager?.getPreviewWindow?.();
+        if (!preview) {
+            return;
+        }
+        try {
+            preview.webContents.send('settings:preview-sync', payload);
+        } catch (error) {
+            console.warn('[Settings] Failed to stream preview update', error);
         }
     });
 };

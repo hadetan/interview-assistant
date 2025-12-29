@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import TranscriptWindow from './components/TranscriptWindow';
 import SettingsWindow from './components/SettingsWindow';
 import PermissionWindow from './components/PermissionWindow';
+import TranscriptPreviewWindow from './components/TranscriptPreviewWindow';
 import { useTranscriptionSession } from './hooks/useTranscriptionSession';
 import './App.css';
 
@@ -10,7 +11,8 @@ const DEFAULT_MIME = 'audio/webm;codecs=opus';
 const WINDOW_VARIANTS = {
     TRANSCRIPT: 'transcript',
     SETTINGS: 'settings',
-    PERMISSIONS: 'permissions'
+    PERMISSIONS: 'permissions',
+    TRANSCRIPT_PREVIEW: 'transcript-preview'
 };
 
 const resolvePreferredMimeType = () => {
@@ -44,6 +46,7 @@ function App() {
     const windowVariant = useMemo(() => resolveWindowVariant(), []);
     const isSettingsWindow = windowVariant === WINDOW_VARIANTS.SETTINGS;
     const isPermissionWindow = windowVariant === WINDOW_VARIANTS.PERMISSIONS;
+    const isTranscriptPreviewWindow = windowVariant === WINDOW_VARIANTS.TRANSCRIPT_PREVIEW;
 
     const overlayMovementHandledGlobally = useMemo(() => {
         if (typeof electronAPI?.overlay?.movementHandledGlobally === 'boolean') {
@@ -116,6 +119,10 @@ function App() {
 
     if (isPermissionWindow) {
         return <PermissionWindow />;
+    }
+
+    if (isTranscriptPreviewWindow) {
+        return <TranscriptPreviewWindow />;
     }
 
     return (

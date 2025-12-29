@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import TranscriptPreview from './TranscriptPreview';
 import { clampOpacity, TRANSCRIPT_OPACITY_OPTIONS } from '../utils/transcriptOpacity';
 import './css/SettingsWindow.css';
 import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
@@ -27,6 +26,8 @@ function SettingsWindow() {
     const [hasSavedConfig, setHasSavedConfig] = useState(false);
     const [activeTab, setActiveTab] = useState('assistant');
     const [transcriptOpacity, setTranscriptOpacity] = useState(DEFAULT_TRANSCRIPT_OPACITY);
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const [previewBusy, setPreviewBusy] = useState(false);
 
     const modelsRequestIdRef = useRef(0);
     const fetchModelsTimeoutRef = useRef(null);
@@ -78,6 +79,7 @@ function SettingsWindow() {
                 setModel(nextModel);
                 setHasStoredSecret(Boolean(result.hasSecret));
                 setMissing(result.missing || emptyMissing);
+                setPreviewOpen(Boolean(result.previewOpen));
                 const storedConfigured = !(result?.missing?.provider || result?.missing?.model || result?.missing?.apiKey);
                 setHasSavedConfig(storedConfigured);
                 setActiveTab(storedConfigured ? 'general' : 'assistant');
@@ -102,6 +104,33 @@ function SettingsWindow() {
         setConnectionVerified(false);
         setStatus((current) => current.type === 'error' ? current : { type: 'info', message: '' });
     }, [provider, apiKey]);
+
+    useEffect(() => {
+        if (typeof electronAPI?.settings?.onPreviewClosed !== 'function') {
+            return () => {};
+        }
+        const unsubscribe = electronAPI.settings.onPreviewClosed(() => {
+            setPreviewOpen(false);
+            setPreviewBusy(false);
+            setStatus((current) => (current.type === 'error' ? current : { type: 'info', message: '' }));
+        });
+        return () => {
+            if (typeof unsubscribe === 'function') {
+                unsubscribe();
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!previewOpen || typeof electronAPI?.settings?.syncPreview !== 'function') {
+            return;
+        }
+        try {
+            electronAPI.settings.syncPreview({ general: { transcriptOpacity: clampOpacity(transcriptOpacity) } });
+        } catch (_error) {
+            // ignore sync failures
+        }
+    }, [previewOpen, transcriptOpacity]);
 
     const loadModels = async (targetProvider, { apiKeyOverride = '', ensureContainsModel = '', skipStatus = false } = {}) => {
         const requestId = ++modelsRequestIdRef.current;
@@ -250,7 +279,15 @@ function SettingsWindow() {
     };
 
     const handleOpacityChange = (value) => {
-        setTranscriptOpacity(clampOpacity(value));
+        const clamped = clampOpacity(value);
+        setTranscriptOpacity(clamped);
+        if (previewOpen && typeof electronAPI?.settings?.syncPreview === 'function') {
+            try {
+                electronAPI.settings.syncPreview({ general: { transcriptOpacity: clamped } });
+            } catch (_error) {
+                // ignore sync failures
+            }
+        }
     };
 
     const persistSettings = async ({
@@ -311,6 +348,40 @@ function SettingsWindow() {
             savingMessage: 'Saving preferences…',
             successMessage: 'Transcript preferences saved.'
         });
+    };
+
+    const handlePreviewToggle = async () => {
+        if (previewBusy || typeof electronAPI?.settings !== 'object' || electronAPI.settings === null) {
+            return;
+        }
+
+        const targetState = !previewOpen;
+        setPreviewBusy(true);
+        setStatus({ type: 'info', message: targetState ? 'Opening preview window…' : 'Closing preview window…' });
+
+        try {
+            if (targetState) {
+                const response = await electronAPI.settings.openPreview();
+                if (!response?.ok) {
+                    throw new Error(response?.error || 'Failed to open preview window.');
+                }
+                setPreviewOpen(true);
+                if (typeof electronAPI.settings.syncPreview === 'function') {
+                    electronAPI.settings.syncPreview({ general: { transcriptOpacity: clampOpacity(transcriptOpacity) } });
+                }
+            } else {
+                const response = await electronAPI.settings.closePreview();
+                if (!response?.ok) {
+                    throw new Error(response?.error || 'Failed to close preview window.');
+                }
+                setPreviewOpen(false);
+            }
+            setStatus({ type: 'success', message: '' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error?.message || (targetState ? 'Failed to open preview window.' : 'Failed to close preview window.') });
+        } finally {
+            setPreviewBusy(false);
+        }
     };
 
     const normalizedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
@@ -418,6 +489,24 @@ function SettingsWindow() {
                 <h2>Transcript Appearance</h2>
                 <p>Adjust how transparent the transcript window appears on top of your workspace.</p>
 
+                <div className="settings-field settings-preview-field">
+                    <span className="settings-field-label" id="preview-toggle-label">Live preview window</span>
+                    <small className="settings-hint">Open a floating transcript window that mirrors these preferences in real time.</small>
+                    <div className="preview-switch" role="switch" aria-checked={previewOpen} aria-labelledby="preview-toggle-label">
+                        <button
+                            type="button"
+                            className={`preview-switch-track${previewOpen ? ' preview-switch-track-on' : ''}${previewBusy ? ' preview-switch-track-busy' : ''}`}
+                            onClick={handlePreviewToggle}
+                            disabled={previewBusy}
+                        >
+                            <span className={`preview-switch-thumb${previewOpen ? ' preview-switch-thumb-on' : ''}`} />
+                        </button>
+                        <span className="preview-switch-status" aria-live="polite">
+                            {previewBusy ? (previewOpen ? 'Hiding…' : 'Opening…') : (previewOpen ? 'Preview visible' : 'Preview hidden')}
+                        </span>
+                    </div>
+                </div>
+
                 <div className="settings-field settings-opacity-field">
                     <span className="settings-field-label" id="transcript-opacity-label">Opacity level</span>
                     <small className="settings-hint">Higher value reduces transparency</small>
@@ -442,7 +531,6 @@ function SettingsWindow() {
                         })}
                     </div>
                 </div>
-                <TranscriptPreview opacity={transcriptOpacity} />
             </div>
 
             {status.message && (

@@ -242,7 +242,8 @@ const initializeApp = async () => {
         destroySettingsWindow,
         destroyPermissionWindow,
         sendPermissionStatus,
-        moveStepPx
+        moveStepPx,
+        getPreviewWindow
     } = windowManager;
 
     const getActiveTranscriptWindow = () => {
@@ -383,6 +384,14 @@ const initializeApp = async () => {
                     transcriptWindow.webContents.send('settings:general-updated', { general: generalSettings });
                 } catch (error) {
                     console.warn('[Settings] Failed to notify transcript window about general settings update', error);
+                }
+            }
+            const previewWindow = getPreviewWindow();
+            if (previewWindow && !previewWindow.isDestroyed()) {
+                try {
+                    previewWindow.webContents.send('settings:general-updated', { general: generalSettings });
+                } catch (error) {
+                    console.warn('[Settings] Failed to notify preview window about general settings update', error);
                 }
             }
         }
