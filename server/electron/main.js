@@ -19,6 +19,8 @@ const { registerAssistantHandlers } = require('./ipc/assistant');
 const { createSecureStore } = require('./secure-store');
 const { createSettingsStore } = require('./settings-store');
 const { registerSettingsHandlers } = require('./ipc/settings');
+const { createAuthStore } = require('./auth-store');
+const { registerAuthHandlers } = require('./ipc/auth');
 const { createPermissionManager } = require('./permissions');
 const { registerPermissionHandlers } = require('./ipc/permissions');
 
@@ -45,6 +47,7 @@ let assistantConfig = null;
 const assistantSessionWindowMap = new Map();
 let secureStore = null;
 let settingsStore = null;
+let authStore = null;
 
 const MOVE_STEP_PX = 200;
 
@@ -227,6 +230,7 @@ const synchronizeAssistantConfiguration = async () => {
 const initializeApp = async () => {
     secureStore = secureStore || createSecureStore();
     settingsStore = settingsStore || createSettingsStore({ app });
+    authStore = authStore || createAuthStore({ app });
 
     await synchronizeAssistantConfiguration();
 
@@ -362,6 +366,12 @@ const initializeApp = async () => {
     }
 
     showMainExperience();
+
+    registerAuthHandlers({
+        ipcMain,
+        authStore,
+        env: process.env
+    });
 
     registerSettingsHandlers({
         ipcMain,

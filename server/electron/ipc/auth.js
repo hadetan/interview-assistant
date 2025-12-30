@@ -1,0 +1,47 @@
+'use strict';
+
+const SAFE_ENV_KEYS = new Set([
+    'API_BASE_URL',
+    'SUPABASE_URL',
+    'SUPABASE_ANON_KEY',
+    'SUPABASE_REDIRECT_URI'
+]);
+
+const buildSafeEnv = (env = process.env) => {
+    const safe = {};
+    for (const key of SAFE_ENV_KEYS) {
+        const value = typeof env[key] === 'string' ? env[key].trim() : '';
+        if (value) {
+            safe[key] = value;
+        }
+    }
+    return safe;
+};
+
+const registerAuthHandlers = ({ ipcMain, authStore, env = process.env } = {}) => {
+    if (!ipcMain || !authStore) {
+        throw new Error('IPC registration requires ipcMain and authStore instances.');
+    }
+
+    ipcMain.handle('auth:get-token', async () => {
+        const accessToken = authStore.loadAccessToken();
+        return { ok: true, accessToken };
+    });
+
+    ipcMain.handle('auth:set-token', async (_event, payload = {}) => {
+        const next = typeof payload.accessToken === 'string' ? payload.accessToken : '';
+        const accessToken = authStore.saveAccessToken(next);
+        return { ok: true, accessToken };
+    });
+
+    ipcMain.handle('auth:clear-token', async () => {
+        authStore.clearAccessToken();
+        return { ok: true };
+    });
+
+    ipcMain.handle('env:get', async () => ({ ok: true, env: buildSafeEnv(env) }));
+};
+
+module.exports = {
+    registerAuthHandlers
+};

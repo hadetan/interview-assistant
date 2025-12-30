@@ -45,6 +45,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const MIN = 20; const MAX = 5000;
         return Math.min(MAX, Math.max(MIN, parsed));
     },
+    auth: {
+        getAccessToken: () => ipcRenderer.invoke('auth:get-token'),
+        setAccessToken: (accessToken) => ipcRenderer.invoke('auth:set-token', { accessToken }),
+        clearAccessToken: () => ipcRenderer.invoke('auth:clear-token')
+    },
+    env: {
+        get: () => ipcRenderer.invoke('env:get')
+    },
     controlWindow: {
         onToggleCapture: (callback) => {
             if (typeof callback !== 'function') {
