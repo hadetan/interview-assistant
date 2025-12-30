@@ -100,6 +100,8 @@ const createWindowManager = ({
     let lastAppliedPreviewHeight = FALLBACK_TRANSCRIPT_HEIGHT;
     let overlayVisibilitySnapshot = null;
     let permissionWindow = null;
+    let authWindow = null;
+    let authWindowShouldQuitOnClose = true;
     const getTranscriptBounds = () => (transcriptWindow && !transcriptWindow.isDestroyed() ? transcriptWindow.getBounds() : null);
 
     const getTranscriptContentWidth = () => {
@@ -729,6 +731,90 @@ const createWindowManager = ({
         return permissionWindow;
     };
 
+    const getAuthWindow = () => (authWindow && !authWindow.isDestroyed() ? authWindow : null);
+
+    const destroyAuthWindow = ({ exitApp = false } = {}) => {
+        const target = getAuthWindow();
+        if (!target) {
+            authWindowShouldQuitOnClose = true;
+            return;
+        }
+        authWindowShouldQuitOnClose = exitApp;
+        try {
+            target.close();
+        } catch (error) {
+            console.warn('[WindowManager] Failed to close auth window', error);
+        }
+    };
+
+    const createAuthWindow = () => {
+        const existing = getAuthWindow();
+        if (existing) {
+            if (!existing.isVisible()) {
+                existing.show();
+            }
+            existing.focus();
+            return existing;
+        }
+
+        hideOverlayWindows();
+        destroyPreviewWindow();
+        destroySettingsWindow();
+        destroyPermissionWindow();
+
+        authWindowShouldQuitOnClose = true;
+
+        authWindow = new BrowserWindow({
+            width: 640,
+            height: 720,
+            frame: true,
+            transparent: false,
+            resizable: true,
+            minimizable: false,
+            maximizable: false,
+            autoHideMenuBar: true,
+            show: false,
+            backgroundColor: '#0f172a',
+            title: 'Authentication Required',
+            closable: true,
+            webPreferences: {
+                preload: pathModule.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: false
+            }
+        });
+
+        authWindow.setFullScreenable(false);
+
+        authWindow.once('ready-to-show', () => {
+            authWindow?.show();
+            authWindow?.focus();
+        });
+
+        authWindow.on('close', () => {
+            if (authWindowShouldQuitOnClose && app && typeof app.quit === 'function') {
+                try {
+                    app.quit();
+                } catch (error) {
+                    console.warn('[WindowManager] Failed to quit app after auth window close', error);
+                }
+            }
+        });
+
+        authWindow.on('closed', () => {
+            const shouldQuit = authWindowShouldQuitOnClose;
+            authWindow = null;
+            authWindowShouldQuitOnClose = true;
+            if (!shouldQuit) {
+                restoreOverlayWindows();
+            }
+        });
+
+        loadRendererForWindow(authWindow, 'auth');
+        return authWindow;
+    };
+
     return {
         createTranscriptWindow,
         createSettingsWindow,
@@ -743,6 +829,7 @@ const createWindowManager = ({
         getSettingsWindow,
         getPreviewWindow,
         getPermissionWindow,
+        getAuthWindow,
         hideOverlayWindows,
         restoreOverlayWindows,
         clampOverlaysWithinArea,
@@ -750,7 +837,9 @@ const createWindowManager = ({
         sendPermissionStatus,
         moveStepPx,
         windowVerticalGap,
-        windowTopMargin
+        windowTopMargin,
+        createAuthWindow,
+        destroyAuthWindow
     };
 };
 

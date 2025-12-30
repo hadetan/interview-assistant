@@ -18,7 +18,7 @@ const buildSafeEnv = (env = process.env) => {
     return safe;
 };
 
-const registerAuthHandlers = ({ ipcMain, authStore, env = process.env } = {}) => {
+const registerAuthHandlers = ({ ipcMain, authStore, env = process.env, onTokenSet, onTokenCleared } = {}) => {
     if (!ipcMain || !authStore) {
         throw new Error('IPC registration requires ipcMain and authStore instances.');
     }
@@ -31,11 +31,25 @@ const registerAuthHandlers = ({ ipcMain, authStore, env = process.env } = {}) =>
     ipcMain.handle('auth:set-token', async (_event, payload = {}) => {
         const next = typeof payload.accessToken === 'string' ? payload.accessToken : '';
         const accessToken = authStore.saveAccessToken(next);
+        if (typeof onTokenSet === 'function') {
+            try {
+                onTokenSet({ accessToken });
+            } catch (error) {
+                console.warn('[AuthIPC] onTokenSet callback failed.', error);
+            }
+        }
         return { ok: true, accessToken };
     });
 
     ipcMain.handle('auth:clear-token', async () => {
         authStore.clearAccessToken();
+        if (typeof onTokenCleared === 'function') {
+            try {
+                onTokenCleared();
+            } catch (error) {
+                console.warn('[AuthIPC] onTokenCleared callback failed.', error);
+            }
+        }
         return { ok: true };
     });
 

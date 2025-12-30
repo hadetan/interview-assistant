@@ -19,6 +19,22 @@ body[data-window-mode="settings"] {
     overflow: auto;
 }
 
+body[data-window-mode="auth"] {
+    background: #0f172a;
+    overflow: auto;
+}
+
 #root {
     display: contents;
+}
+
+.auth-window-shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 2rem;
+    text-align: center;
 }

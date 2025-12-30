@@ -240,11 +240,14 @@ const initializeApp = async () => {
         getTranscriptWindow,
         getSettingsWindow,
         getPermissionWindow,
+        getAuthWindow,
         createTranscriptWindow,
         createSettingsWindow,
         createPermissionWindow,
+        createAuthWindow,
         destroySettingsWindow,
         destroyPermissionWindow,
+        destroyAuthWindow,
         sendPermissionStatus,
         moveStepPx,
         getPreviewWindow
@@ -349,13 +352,32 @@ const initializeApp = async () => {
         return true;
     };
 
+    let awaitingAuthentication = false;
+
+    const ensureAuthWindowVisible = () => {
+        awaitingAuthentication = true;
+        return createAuthWindow();
+    };
+
+    const closeAuthWindowWithoutExit = () => {
+        awaitingAuthentication = false;
+        destroyAuthWindow({ exitApp: false });
+    };
+
+    const canShowMainExperience = () => {
+        if (awaitingAuthentication) {
+            return false;
+        }
+        return showMainExperience();
+    };
+
     const permissionIpcRegistration = registerPermissionHandlers({
         ipcMain,
         permissionManager,
         sendPermissionStatus,
         onPermissionsGranted: () => {
             permissionPreflightComplete = true;
-            if (showMainExperience()) {
+            if (canShowMainExperience()) {
                 shortcutManager.registerAllShortcuts();
             }
         }
@@ -365,12 +387,34 @@ const initializeApp = async () => {
         emitPermissionStatus = permissionIpcRegistration.emitStatusToWindow;
     }
 
-    showMainExperience();
+    const initialAccessToken = authStore.loadAccessToken();
+    if (typeof initialAccessToken === 'string' && initialAccessToken.trim()) {
+        awaitingAuthentication = false;
+        if (canShowMainExperience()) {
+            shortcutManager.registerAllShortcuts();
+        }
+    } else {
+        ensureAuthWindowVisible();
+    }
 
     registerAuthHandlers({
         ipcMain,
         authStore,
-        env: process.env
+        env: process.env,
+        onTokenSet: ({ accessToken }) => {
+            const sanitized = typeof accessToken === 'string' ? accessToken.trim() : '';
+            if (!sanitized) {
+                ensureAuthWindowVisible();
+                return;
+            }
+            closeAuthWindowWithoutExit();
+            if (canShowMainExperience()) {
+                shortcutManager.registerAllShortcuts();
+            }
+        },
+        onTokenCleared: () => {
+            ensureAuthWindowVisible();
+        }
     });
 
     registerSettingsHandlers({
@@ -382,7 +426,7 @@ const initializeApp = async () => {
         onSettingsApplied: async () => {
             const updatedConfig = await synchronizeAssistantConfiguration();
             if (updatedConfig && updatedConfig.isEnabled) {
-                if (showMainExperience()) {
+                if (canShowMainExperience()) {
                     shortcutManager.registerAllShortcuts();
                 }
             }
@@ -414,7 +458,7 @@ const initializeApp = async () => {
             ensureSettingsWindowVisible();
             return;
         }
-        if (!showMainExperience()) {
+        if (!canShowMainExperience()) {
             return;
         }
         sendToTranscriptWindow('control-window:toggle-capture');
@@ -520,7 +564,7 @@ const initializeApp = async () => {
             ensureSettingsWindowVisible();
             return;
         }
-        if (!showMainExperience()) {
+        if (!canShowMainExperience()) {
             return;
         }
 
@@ -578,7 +622,7 @@ const initializeApp = async () => {
     screen.on('display-removed', positionOverlayWindows);
 
     app.on('activate', () => {
-        showMainExperience();
+        canShowMainExperience();
     });
 
     registerDesktopCaptureHandler({ ipcMain, desktopCapturer });
