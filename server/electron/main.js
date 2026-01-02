@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, nativeImage, systemPreferences, shell } = require('electron');
 const loadTranscriptionConfig = require('../config/transcription');
 const loadAssistantConfig = require('../config/assistant');
 const { createTranscriptionService } = require('../ai/transcription');
@@ -25,6 +25,104 @@ const { createPermissionManager } = require('./permissions');
 const { registerPermissionHandlers } = require('./ipc/permissions');
 
 loadEnv();
+
+const AUTH_DEEP_LINK_PROTOCOL = 'capture';
+const pendingDeepLinkUrls = [];
+let flushDeepLinkQueue = null;
+
+const enqueueDeepLinkUrl = (url) => {
+    const trimmed = typeof url === 'string' ? url.trim() : '';
+    if (!trimmed) {
+        return;
+    }
+    pendingDeepLinkUrls.push(trimmed);
+    if (typeof flushDeepLinkQueue === 'function') {
+        flushDeepLinkQueue();
+    }
+};
+
+const findDeepLinkArg = (argv = []) => {
+    if (!Array.isArray(argv)) {
+        return '';
+    }
+    for (const arg of argv) {
+        if (typeof arg !== 'string') {
+            continue;
+        }
+        if (arg.toLowerCase().startsWith(`${AUTH_DEEP_LINK_PROTOCOL}:`)) {
+            return arg;
+        }
+    }
+    return '';
+};
+
+const parseParams = (searchParams) => {
+    const result = {};
+    if (!searchParams) {
+        return result;
+    }
+    for (const [key, value] of searchParams.entries()) {
+        result[key] = value;
+    }
+    return result;
+};
+
+const parseOAuthCallbackUrl = (urlString) => {
+    const trimmed = typeof urlString === 'string' ? urlString.trim() : '';
+    if (!trimmed) {
+        return null;
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    } catch (_error) {
+        return null;
+    }
+    if (parsed.protocol !== `${AUTH_DEEP_LINK_PROTOCOL}:`) {
+        return null;
+    }
+    const params = parseParams(parsed.searchParams);
+    const fragmentRaw = parsed.hash || '';
+    const fragmentString = fragmentRaw.startsWith('#') ? fragmentRaw.slice(1) : fragmentRaw;
+    const fragmentParams = parseParams(new URLSearchParams(fragmentString));
+    return {
+        url: trimmed,
+        host: parsed.host || '',
+        pathname: parsed.pathname || '',
+        params,
+        fragmentParams,
+        code: params.code || fragmentParams.code || '',
+        state: params.state || fragmentParams.state || '',
+        error: params.error || fragmentParams.error || '',
+        errorDescription: params.error_description || fragmentParams.error_description || '',
+        fragment: fragmentRaw,
+        receivedAt: new Date().toISOString()
+    };
+};
+
+if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    process.exit(0);
+}
+
+app.on('second-instance', (_event, argv = []) => {
+    const deepLink = findDeepLinkArg(argv);
+    if (deepLink) {
+        enqueueDeepLinkUrl(deepLink);
+    }
+});
+
+app.on('will-finish-launching', () => {
+    app.on('open-url', (event, url) => {
+        event.preventDefault();
+        enqueueDeepLinkUrl(url);
+    });
+});
+
+const initialDeepLink = findDeepLinkArg(process.argv);
+if (initialDeepLink) {
+    enqueueDeepLinkUrl(initialDeepLink);
+}
 
 if (process.platform === 'linux') {
     app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
@@ -397,7 +495,7 @@ const initializeApp = async () => {
         ensureAuthWindowVisible();
     }
 
-    registerAuthHandlers({
+    const { emitOAuthCallback } = registerAuthHandlers({
         ipcMain,
         authStore,
         env: process.env,
@@ -414,8 +512,61 @@ const initializeApp = async () => {
         },
         onTokenCleared: () => {
             ensureAuthWindowVisible();
-        }
+        },
+        openExternal: (url) => shell.openExternal(url)
     });
+
+    const registerAuthProtocol = () => {
+        try {
+            if (process.defaultApp && process.argv.length >= 2) {
+                const appPath = path.resolve(process.argv[1]);
+                const success = app.setAsDefaultProtocolClient(AUTH_DEEP_LINK_PROTOCOL, process.execPath, [appPath]);
+                if (!success) {
+                    console.warn(`[Auth] Failed to register ${AUTH_DEEP_LINK_PROTOCOL} protocol handler in development mode.`);
+                }
+                return;
+            }
+            const success = app.setAsDefaultProtocolClient(AUTH_DEEP_LINK_PROTOCOL);
+            if (!success) {
+                console.warn(`[Auth] Failed to register ${AUTH_DEEP_LINK_PROTOCOL} protocol handler.`);
+            }
+        } catch (error) {
+            console.warn('[Auth] Protocol registration failed.', error);
+        }
+    };
+
+    registerAuthProtocol();
+
+    const handleDeepLinkUrl = (url) => {
+        const payload = parseOAuthCallbackUrl(url);
+        if (!payload) {
+            return;
+        }
+        if (awaitingAuthentication) {
+            const existing = getAuthWindow();
+            if (!existing) {
+                ensureAuthWindowVisible();
+            } else {
+                try {
+                    existing.focus();
+                } catch (_error) {
+                    // ignore focus failures
+                }
+            }
+        }
+        if (typeof emitOAuthCallback === 'function') {
+            emitOAuthCallback(payload);
+        }
+    };
+
+    flushDeepLinkQueue = () => {
+        while (pendingDeepLinkUrls.length > 0) {
+            const next = pendingDeepLinkUrls.shift();
+            handleDeepLinkUrl(next);
+        }
+    };
+
+    flushDeepLinkQueue();
 
     registerSettingsHandlers({
         ipcMain,

@@ -766,7 +766,7 @@ const createWindowManager = ({
 
         authWindow = new BrowserWindow({
             width: 640,
-            height: 720,
+            height: 620,
             frame: true,
             transparent: false,
             resizable: true,

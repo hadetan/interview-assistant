@@ -18,10 +18,84 @@ const buildSafeEnv = (env = process.env) => {
     return safe;
 };
 
-const registerAuthHandlers = ({ ipcMain, authStore, env = process.env, onTokenSet, onTokenCleared } = {}) => {
+const registerAuthHandlers = ({ ipcMain, authStore, env = process.env, onTokenSet, onTokenCleared, openExternal } = {}) => {
     if (!ipcMain || !authStore) {
         throw new Error('IPC registration requires ipcMain and authStore instances.');
     }
+
+    const oauthSubscribers = new Map();
+    const pendingOAuthPayloads = [];
+
+    const deliverOAuthPayload = (webContents, payload) => {
+        if (!webContents || webContents.isDestroyed()) {
+            return false;
+        }
+        try {
+            webContents.send('auth:oauth-callback', payload);
+            return true;
+        } catch (error) {
+            console.warn('[AuthIPC] Failed to deliver OAuth callback.', error);
+            return false;
+        }
+    };
+
+    const emitOAuthCallback = (payload) => {
+        if (!payload || typeof payload !== 'object') {
+            return false;
+        }
+        let delivered = false;
+        for (const subscriber of oauthSubscribers.values()) {
+            const { webContents } = subscriber;
+            if (deliverOAuthPayload(webContents, payload)) {
+                delivered = true;
+            }
+        }
+        if (!delivered) {
+            pendingOAuthPayloads.push(payload);
+        }
+        return delivered;
+    };
+
+    const subscribeToOAuthCallbacks = (event) => {
+        const sender = event?.sender;
+        if (!sender) {
+            return;
+        }
+        const id = sender.id;
+        if (!oauthSubscribers.has(id)) {
+            const cleanup = () => {
+                oauthSubscribers.delete(id);
+            };
+            sender.once('destroyed', cleanup);
+            oauthSubscribers.set(id, { webContents: sender, cleanup });
+        }
+        if (pendingOAuthPayloads.length > 0) {
+            const queued = pendingOAuthPayloads.splice(0, pendingOAuthPayloads.length);
+            for (const payload of queued) {
+                deliverOAuthPayload(sender, payload);
+            }
+        }
+    };
+
+    const unsubscribeFromOAuthCallbacks = (event) => {
+        const sender = event?.sender;
+        if (!sender) {
+            return;
+        }
+        const id = sender.id;
+        if (!oauthSubscribers.has(id)) {
+            return;
+        }
+        const record = oauthSubscribers.get(id);
+        if (record?.cleanup) {
+            try {
+                sender.removeListener('destroyed', record.cleanup);
+            } catch (_error) {
+                // ignore removal failures
+            }
+        }
+        oauthSubscribers.delete(id);
+    };
 
     ipcMain.handle('auth:get-token', async () => {
         const accessToken = authStore.loadAccessToken();
@@ -54,6 +128,30 @@ const registerAuthHandlers = ({ ipcMain, authStore, env = process.env, onTokenSe
     });
 
     ipcMain.handle('env:get', async () => ({ ok: true, env: buildSafeEnv(env) }));
+
+        if (typeof ipcMain.on === 'function') {
+            ipcMain.on('auth:oauth-subscribe', subscribeToOAuthCallbacks);
+            ipcMain.on('auth:oauth-unsubscribe', unsubscribeFromOAuthCallbacks);
+        }
+
+        ipcMain.handle('auth:launch-oauth', async (_event, payload = {}) => {
+            const url = typeof payload.url === 'string' ? payload.url.trim() : '';
+            if (!url) {
+                return { ok: false, error: 'Missing OAuth URL.' };
+            }
+            if (typeof openExternal !== 'function') {
+                return { ok: false, error: 'OAuth launcher unavailable.' };
+            }
+            try {
+                await openExternal(url);
+                return { ok: true };
+            } catch (error) {
+                console.warn('[AuthIPC] Failed to open OAuth URL.', error);
+                return { ok: false, error: error?.message || 'Failed to launch OAuth URL.' };
+            }
+        });
+
+        return { emitOAuthCallback };
 };
 
 module.exports = {

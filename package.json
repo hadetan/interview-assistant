@@ -1,5 +1,5 @@
 {
-  "name": "poc-screen-and-audio-capture",
+  "name": "interview-assistant-app",
   "version": "1.0.0",
   "description": "Screen and audio capture recorder.",
   "main": "server/electron/main.js",
@@ -97,6 +97,7 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.3",
     "@anthropic-ai/sdk": "^0.71.2",
     "@deepgram/sdk": "^3.13.0",
     "@echogarden/fvad-wasm": "^0.2.0",
