@@ -11,13 +11,21 @@ const STATUS_MESSAGES = {
     exchanging: 'Finishing sign-in…'
 };
 
+const parseExpiresIn = (rawValue) => {
+    const numeric = Number(rawValue);
+    if (Number.isFinite(numeric)) {
+        return numeric;
+    }
+    const fallback = parseInt(String(rawValue || ''), 10);
+    return Number.isFinite(fallback) ? fallback : 0;
+};
+
 const AuthWindow = () => {
     const [initializing, setInitializing] = useState(true);
     const [isReady, setIsReady] = useState(false);
     const [flowState, setFlowState] = useState('idle');
     const [error, setError] = useState('');
     const [completed, setCompleted] = useState(false);
-    const [lastErrorStep, setLastErrorStep] = useState(null);
 
     const supabaseRef = useRef(null);
     const redirectUriRef = useRef('');
@@ -69,7 +77,6 @@ const AuthWindow = () => {
         if (!supabase && !hasFragmentTokens) {
             setError('Authentication client unavailable. Please retry.');
             setFlowState('idle');
-            setLastErrorStep('exchange');
             setCompleted(false);
             flowActiveRef.current = false;
             return;
@@ -82,7 +89,6 @@ const AuthWindow = () => {
         if (callbackError) {
             setError(payload.errorDescription || callbackError || 'Google sign-in was cancelled.');
             setFlowState('idle');
-            setLastErrorStep('browser');
             setCompleted(false);
             flowActiveRef.current = false;
             return;
@@ -94,9 +100,9 @@ const AuthWindow = () => {
             let session = null;
             if (authCode) {
                 if (!supabase) {
-                    throw new Error('Supabase client unavailable for code exchange.');
+                    throw new Error('Supabase client is unavailable to complete sign-in. Please close this window and restart the Google sign-in');
                 }
-                const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession({ authCode });
+                const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession({ code: authCode });
                 if (exchangeError) {
                     throw new Error(exchangeError.message || 'Failed to finalize Supabase session.');
                 }
@@ -105,8 +111,7 @@ const AuthWindow = () => {
                 const access = typeof fragmentParams.access_token === 'string' ? fragmentParams.access_token : '';
                 const refresh = typeof fragmentParams.refresh_token === 'string' ? fragmentParams.refresh_token : '';
                 const expiresValue = fragmentParams.expires_in || fragmentParams.refresh_token_expires_in || fragmentParams.refresh_expires_in;
-                const numericExpires = Number(expiresValue);
-                const expiresIn = Number.isFinite(numericExpires) ? numericExpires : parseInt(String(expiresValue || ''), 10) || 0;
+                const expiresIn = parseExpiresIn(expiresValue);
                 const tokenType = typeof fragmentParams.token_type === 'string' ? fragmentParams.token_type : 'bearer';
                 if (access && refresh) {
                     session = {
@@ -120,9 +125,7 @@ const AuthWindow = () => {
 
             const accessToken = session?.access_token || '';
             const refreshToken = session?.refresh_token || '';
-            const expiresInRaw = session?.expires_in;
-            const expiresNumeric = Number(expiresInRaw);
-            const expiresIn = Number.isFinite(expiresNumeric) ? expiresNumeric : parseInt(String(expiresInRaw || ''), 10) || 0;
+            const expiresIn = parseExpiresIn(session?.expires_in);
             const tokenType = session?.token_type || 'bearer';
 
             if (!accessToken || !refreshToken) {
@@ -139,19 +142,17 @@ const AuthWindow = () => {
 
             const backendAccessToken = response?.data?.data?.session?.accessToken;
             if (!backendAccessToken) {
-                throw new Error('Backend did not return an access token.');
+                throw new Error('Something went wrong while logging in with google.');
             }
 
             await persistAccessToken(backendAccessToken);
             setError('');
             setFlowState('idle');
-            setLastErrorStep(null);
             setCompleted(true);
         } catch (exchangeError) {
             const message = exchangeError?.message || 'Authentication failed. Please try again.';
             setError(message);
             setFlowState('idle');
-            setLastErrorStep('exchange');
             setCompleted(false);
         } finally {
             flowActiveRef.current = false;
@@ -178,7 +179,6 @@ const AuthWindow = () => {
         if (!supabase) {
             setError('Authentication client unavailable. Please retry.');
             setCompleted(false);
-            setLastErrorStep('launch');
             return;
         }
 
@@ -186,7 +186,6 @@ const AuthWindow = () => {
         setError('');
         setFlowState('launching');
         setCompleted(false);
-        setLastErrorStep(null);
 
         try {
             const { data, error: signInError } = await supabase.auth.signInWithOAuth({
@@ -220,7 +219,6 @@ const AuthWindow = () => {
             const message = launchError?.message || 'Failed to start authentication. Please try again.';
             setError(message);
             setFlowState('idle');
-            setLastErrorStep('launch');
             setCompleted(false);
             flowActiveRef.current = false;
         }
@@ -238,75 +236,8 @@ const AuthWindow = () => {
 
     const buttonDisabled = initializing || !isReady || flowState === 'launching' || flowState === 'waiting' || flowState === 'exchanging';
     const buttonLabel = flowState === 'waiting' ? 'Waiting for Google…' : 'Continue with Google';
-    const successText = completed && !error ? 'Signed in successfully. Returning to Capture…' : '';
+    const successText = completed && !error ? 'Signed in successfully. Returning to Interview Assistant…' : '';
     const inlineStatus = successText || statusText;
-
-    const stepStates = useMemo(() => {
-        const states = { start: 'idle', browser: 'idle', finalize: 'idle' };
-        if (completed) {
-            states.start = 'done';
-            states.browser = 'done';
-            states.finalize = 'done';
-            return states;
-        }
-        switch (flowState) {
-            case 'launching':
-                states.start = 'active';
-                break;
-            case 'waiting':
-                states.start = 'done';
-                states.browser = 'active';
-                break;
-            case 'exchanging':
-                states.start = 'done';
-                states.browser = 'done';
-                states.finalize = 'active';
-                break;
-            default:
-                break;
-        }
-        if (error && lastErrorStep) {
-            if (lastErrorStep === 'launch') {
-                states.start = 'error';
-                states.browser = 'idle';
-                states.finalize = 'idle';
-            } else if (lastErrorStep === 'browser') {
-                states.start = 'done';
-                states.browser = 'error';
-                states.finalize = 'idle';
-            } else if (lastErrorStep === 'exchange') {
-                states.start = 'done';
-                states.browser = 'done';
-                states.finalize = 'error';
-            }
-        }
-        return states;
-    }, [flowState, completed, error, lastErrorStep]);
-
-    const stepStatusLabels = {
-        idle: 'Pending',
-        active: 'In progress',
-        done: 'Complete',
-        error: 'Needs attention'
-    };
-
-    const steps = [
-        {
-            key: 'start',
-            title: 'Launch Google sign-in',
-            body: 'We open your default browser and direct you to the Supabase-hosted Google consent screen.'
-        },
-        {
-            key: 'browser',
-            title: 'Approve in your browser',
-            body: 'Choose the Google account you use for Capture. Supabase manages the OAuth flow and refresh cookie.'
-        },
-        {
-            key: 'finalize',
-            title: 'Securely finish sign-in',
-            body: 'We receive the Supabase session, store the access token locally, and the backend keeps the refresh token in an HttpOnly cookie.'
-        }
-    ];
 
     return (
         <div className="auth-window" role="presentation">

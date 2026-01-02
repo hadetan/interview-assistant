@@ -406,7 +406,7 @@ const initializeApp = async () => {
     // macOS pre-flight: always show permission/testing window before overlays.
     let permissionPreflightComplete = permissionManager.isMac ? false : true;
 
-    let emitPermissionStatus = () => {};
+    let emitPermissionStatus = () => { };
 
     const ensurePermissionWindowVisible = (status) => {
         const currentStatus = status || permissionManager.refreshStatus();
@@ -538,7 +538,25 @@ const initializeApp = async () => {
     registerAuthProtocol();
 
     const handleDeepLinkUrl = (url) => {
-        const payload = parseOAuthCallbackUrl(url);
+        const trimmed = typeof url === 'string' ? url.trim() : '';
+        if (!trimmed) {
+            return;
+        }
+
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(trimmed);
+        } catch (_error) {
+            console.warn('[Auth] Ignoring malformed deep link URL.');
+            return;
+        }
+
+        if (parsedUrl.protocol !== `${AUTH_DEEP_LINK_PROTOCOL}:`) {
+            console.warn(`[Auth] Ignoring unsupported deep link protocol: ${parsedUrl.protocol}`);
+            return;
+        }
+
+        const payload = parseOAuthCallbackUrl(trimmed);
         if (!payload) {
             return;
         }
@@ -566,7 +584,11 @@ const initializeApp = async () => {
         }
     };
 
-    flushDeepLinkQueue();
+    setImmediate(() => {
+        if (typeof flushDeepLinkQueue === 'function') {
+            flushDeepLinkQueue();
+        }
+    });
 
     registerSettingsHandlers({
         ipcMain,

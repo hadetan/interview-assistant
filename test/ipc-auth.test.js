@@ -31,9 +31,11 @@ test('auth handlers wire through to authStore', async () => {
     };
 
     const openCalls = [];
-    const { emitOAuthCallback } = registerAuthHandlers({ ipcMain, authStore, env: {}, openExternal: async (url) => {
-        openCalls.push(url);
-    } });
+    const { emitOAuthCallback } = registerAuthHandlers({
+        ipcMain, authStore, env: {}, openExternal: async (url) => {
+            openCalls.push(url);
+        }
+    });
 
     const getToken = handles.get('auth:get-token');
     assert.ok(getToken, 'expected auth:get-token handler to be registered');
@@ -59,8 +61,8 @@ test('auth handlers wire through to authStore', async () => {
         send: (_channel, payload) => {
             sentPayloads.push(payload);
         },
-        once: (_event, _callback) => {},
-        removeListener: () => {}
+        once: (_event, _callback) => { },
+        removeListener: () => { }
     };
 
     // Emit before subscription to ensure payload queues
@@ -88,18 +90,18 @@ test('env:get handler exposes whitelisted keys only', async () => {
         handle: (channel, handler) => {
             handles.set(channel, handler);
         },
-        on: () => {}
+        on: () => { }
     };
 
     const env = {
         API_BASE_URL: ' https://api.example.com ',
         SUPABASE_URL: 'https://sb.example.com',
         SUPABASE_ANON_KEY: 'anon',
-        SUPABASE_REDIRECT_URI: '',
+        SUPABASE_REDIRECT_URI: ' capture://auth ',
         SECRET_TOKEN: 'should-not-leak'
     };
 
-    registerAuthHandlers({ ipcMain, authStore: { loadAccessToken() {}, saveAccessToken() {}, clearAccessToken() {} }, env, openExternal: async () => {} });
+    registerAuthHandlers({ ipcMain, authStore: { loadAccessToken() { }, saveAccessToken() { }, clearAccessToken() { } }, env, openExternal: async () => { } });
 
     const envGet = handles.get('env:get');
     const result = await envGet();
@@ -108,7 +110,8 @@ test('env:get handler exposes whitelisted keys only', async () => {
         env: {
             API_BASE_URL: 'https://api.example.com',
             SUPABASE_URL: 'https://sb.example.com',
-            SUPABASE_ANON_KEY: 'anon'
+            SUPABASE_ANON_KEY: 'anon',
+            SUPABASE_REDIRECT_URI: 'capture://auth'
         }
     });
 });
@@ -119,13 +122,13 @@ test('auth:launch-oauth delegates to openExternal', async () => {
         handle: (channel, handler) => {
             handles.set(channel, handler);
         },
-        on: () => {}
+        on: () => { }
     };
 
     const openCalls = [];
     registerAuthHandlers({
         ipcMain,
-        authStore: { loadAccessToken() {}, saveAccessToken() {}, clearAccessToken() {} },
+        authStore: { loadAccessToken() { }, saveAccessToken() { }, clearAccessToken() { } },
         env: {},
         openExternal: async (url) => {
             if (!url) {

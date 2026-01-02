@@ -23,7 +23,7 @@ export const initializeSupabaseClient = async ({ configProvider = defaultRuntime
                 autoRefreshToken: false,
                 detectSessionInUrl: false,
                 persistSession: true,
-                storageKey: 'capture-supabase-auth'
+                storageKey: 'interview-assistant-app-auth'
             }
         });
         cachedConfigKey = cacheKey;

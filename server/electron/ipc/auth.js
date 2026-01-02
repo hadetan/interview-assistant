@@ -129,29 +129,29 @@ const registerAuthHandlers = ({ ipcMain, authStore, env = process.env, onTokenSe
 
     ipcMain.handle('env:get', async () => ({ ok: true, env: buildSafeEnv(env) }));
 
-        if (typeof ipcMain.on === 'function') {
-            ipcMain.on('auth:oauth-subscribe', subscribeToOAuthCallbacks);
-            ipcMain.on('auth:oauth-unsubscribe', unsubscribeFromOAuthCallbacks);
+    if (typeof ipcMain.on === 'function') {
+        ipcMain.on('auth:oauth-subscribe', subscribeToOAuthCallbacks);
+        ipcMain.on('auth:oauth-unsubscribe', unsubscribeFromOAuthCallbacks);
+    }
+
+    ipcMain.handle('auth:launch-oauth', async (_event, payload = {}) => {
+        const url = typeof payload.url === 'string' ? payload.url.trim() : '';
+        if (!url) {
+            return { ok: false, error: 'Missing OAuth URL.' };
         }
+        if (typeof openExternal !== 'function') {
+            return { ok: false, error: 'OAuth launcher unavailable.' };
+        }
+        try {
+            await openExternal(url);
+            return { ok: true };
+        } catch (error) {
+            console.warn('[AuthIPC] Failed to open OAuth URL.', error);
+            return { ok: false, error: error?.message || 'Failed to launch OAuth URL.' };
+        }
+    });
 
-        ipcMain.handle('auth:launch-oauth', async (_event, payload = {}) => {
-            const url = typeof payload.url === 'string' ? payload.url.trim() : '';
-            if (!url) {
-                return { ok: false, error: 'Missing OAuth URL.' };
-            }
-            if (typeof openExternal !== 'function') {
-                return { ok: false, error: 'OAuth launcher unavailable.' };
-            }
-            try {
-                await openExternal(url);
-                return { ok: true };
-            } catch (error) {
-                console.warn('[AuthIPC] Failed to open OAuth URL.', error);
-                return { ok: false, error: error?.message || 'Failed to launch OAuth URL.' };
-            }
-        });
-
-        return { emitOAuthCallback };
+    return { emitOAuthCallback };
 };
 
 module.exports = {

@@ -45,7 +45,8 @@ const setRestrictedPermissions = ({ fsModule, targetPath }) => {
 const writeFileSafe = ({ fsModule, targetPath, data }) => {
     try {
         ensureDirectory({ fsModule, targetPath });
-        fsModule.writeFileSync(targetPath, JSON.stringify(data, null, 2), 'utf8');
+        const writeOptions = process.platform === 'win32' ? 'utf8' : { encoding: 'utf8', mode: 0o600 };
+        fsModule.writeFileSync(targetPath, JSON.stringify(data, null, 2), writeOptions);
         setRestrictedPermissions({ fsModule, targetPath });
     } catch (error) {
         console.error('[AuthStore] Failed to write auth file.', error);
