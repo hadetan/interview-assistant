@@ -6,6 +6,7 @@ import { clampOpacity, computeTranscriptOpacityVars } from '../utils/transcriptO
 import './css/TranscriptWindow.css';
 import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
 import { useRecorder } from '../hooks/useRecorder';
+import { getApiClient } from '../utils/apiClient.js';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 const SCROLL_STEP_PX = 280;
@@ -130,15 +131,15 @@ export default function TranscriptWindow({ session, chunkTimeslice, preferredMim
             hint: 'Interact and respond',
             shortcuts: [
                 { label: 'Capture to ask', combo: [primaryModifierKey, 'Shift', 'H'] },
-                { label: 'Send request', combo: [primaryModifierKey, 'Enter'] }
+                { label: 'Ask AI', combo: [primaryModifierKey, 'Enter'] }
             ]
         },
         {
             heading: 'Window',
             hint: 'Navigate quickly',
             shortcuts: [
-                { label: 'Move transcript window', combo: [primaryModifierKey, 'Arrow ↑↓'] },
-                { label: 'Scroll transcript', combo: [primaryModifierKey, 'Shift', 'Arrow ←↑↓→'] },
+                { label: 'Move transcript window', combo: [primaryModifierKey, 'Arrow ←↑↓→'] },
+                { label: 'Scroll transcript', combo: [primaryModifierKey, 'Shift', 'Arrow ↑↓'] },
                 { label: 'Hide/unhide app', combo: [primaryModifierKey, 'Shift', 'B'] }
             ]
         }

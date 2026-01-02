@@ -2,6 +2,33 @@ import axios from 'axios';
 import { defaultAuthTokenManager } from './authToken.js';
 import { defaultRuntimeConfig } from './runtimeConfig.js';
 
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
+
+const alignBaseUrlWithWindow = (baseURL) => {
+    if (typeof window === 'undefined' || !baseURL) {
+        return baseURL;
+    }
+    let parsed;
+    try {
+        parsed = new URL(baseURL);
+    } catch (_error) {
+        return baseURL;
+    }
+
+    const currentHostname = window.location?.hostname || '';
+    if (!currentHostname || currentHostname === parsed.hostname) {
+        return baseURL;
+    }
+
+    const isBothLocal = LOCAL_HOSTNAMES.has(parsed.hostname) && LOCAL_HOSTNAMES.has(currentHostname);
+    if (!isBothLocal) {
+        return baseURL;
+    }
+
+    parsed.hostname = currentHostname;
+    return parsed.toString();
+};
+
 const extractAccessToken = (response) => {
     const token = response?.data?.data?.session?.accessToken;
     return typeof token === 'string' ? token : '';
@@ -89,7 +116,8 @@ const attachInterceptors = (instance, tokenManager, { onForceLogout } = {}) => {
 export const createApiClient = ({ axiosLib = axios, tokenManager = defaultAuthTokenManager, configProvider = defaultRuntimeConfig, adapter } = {}) => {
     const clientPromise = (async () => {
         const runtimeConfig = await configProvider.getConfig();
-        const baseURL = runtimeConfig.API_BASE_URL || '';
+        const rawBaseURL = runtimeConfig.API_BASE_URL || '';
+        const baseURL = alignBaseUrlWithWindow(rawBaseURL);
         const instance = axiosLib.create({
             baseURL,
             withCredentials: true,

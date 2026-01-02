@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { clampOpacity, TRANSCRIPT_OPACITY_OPTIONS } from '../utils/transcriptOpacity';
 import './css/SettingsWindow.css';
 import { DEFAULT_TRANSCRIPT_OPACITY } from '../../utils/const';
+import { logout as logoutFromApi } from '../utils/apiClient.js';
 
 const electronAPI = typeof window !== 'undefined' ? window.electronAPI : null;
 
@@ -28,6 +29,8 @@ function SettingsWindow() {
     const [transcriptOpacity, setTranscriptOpacity] = useState(DEFAULT_TRANSCRIPT_OPACITY);
     const [previewOpen, setPreviewOpen] = useState(false);
     const [previewBusy, setPreviewBusy] = useState(false);
+    const [loggingOut, setLoggingOut] = useState(false);
+    const [accountStatus, setAccountStatus] = useState({ type: 'info', message: '' });
 
     const clampedOpacity = useMemo(() => clampOpacity(transcriptOpacity), [transcriptOpacity]);
 
@@ -295,6 +298,24 @@ function SettingsWindow() {
         }
     };
 
+    const handleLogout = async () => {
+        if (loggingOut) {
+            return;
+        }
+        setLoggingOut(true);
+        setAccountStatus({ type: 'info', message: 'Signing out…' });
+        try {
+            await logoutFromApi();
+            setAccountStatus({ type: 'success', message: 'Signed out. Redirecting to sign-in…' });
+        } catch (error) {
+            console.error('[SettingsWindow] Failed to sign out', error);
+            const message = error?.response?.data?.message || error?.message || 'Failed to sign out. Please try again.';
+            setAccountStatus({ type: 'error', message });
+        } finally {
+            setLoggingOut(false);
+        }
+    };
+
     const handleOpacityChange = (value) => {
         const clamped = clampOpacity(value);
         setTranscriptOpacity(clamped);
@@ -411,6 +432,7 @@ function SettingsWindow() {
         hasSavedConfig
             ? [
                 { id: 'general', label: 'General' },
+                { id: 'account', label: 'Account' },
                 { id: 'assistant', label: 'Assistant' }
             ]
             : []
@@ -578,6 +600,39 @@ function SettingsWindow() {
         </div>
     );
 
+    const renderAccountPanel = () => (
+        <div className="settings-panel account">
+            <div className="settings-card">
+                <h2>Account</h2>
+                <p>Sign out to switch Google accounts or secure the assistant.</p>
+                <p>Logging out clears the local auth.json and returns you to the sign-in window.</p>
+            </div>
+
+            {accountStatus.message && (
+                <div className={`settings-status ${accountStatus.type}`}>{accountStatus.message}</div>
+            )}
+
+            <div className="settings-actions">
+                <button
+                    type="button"
+                    className="primary"
+                    onClick={handleLogout}
+                    disabled={loggingOut}
+                >
+                    {loggingOut ? 'Signing out…' : 'Log Out'}
+                </button>
+                <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleClose}
+                    disabled={loggingOut}
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+    );
+
     if (!initialized) {
         return (
             <div className="settings-window loading-state">
@@ -627,6 +682,7 @@ function SettingsWindow() {
             {isOnboarding && renderAssistantPanel()}
             {!isOnboarding && activeTab === 'assistant' && renderAssistantPanel()}
             {!isOnboarding && activeTab === 'general' && renderGeneralPanel()}
+            {!isOnboarding && activeTab === 'account' && renderAccountPanel()}
         </div>
     );
 }
